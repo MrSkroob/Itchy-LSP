@@ -1,5 +1,5 @@
 {
-    "name": "Itchy LSP",
+    "name": "Itchy-LSP",
     "displayName": "Itchy LSP",
     "description": "Linting support for .itch files using `Itchy LSP`.",
     "version": "2022.0.0-dev",
