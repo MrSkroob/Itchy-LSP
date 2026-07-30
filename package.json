@@ -1,0 +1,167 @@
+{
+    "name": "<pytool-module>",
+    "displayName": "<pytool-display-name>",
+    "description": "Linting support for python files using `<pytool-module>`.",
+    "version": "2022.0.0-dev",
+    "preview": true,
+    "serverInfo": {
+        "name": "<pytool-display-name>",
+        "module": "<pytool-module>"
+    },
+    "publisher": "<my-publisher>",
+    "license": "MIT",
+    "homepage": "https://github.com/<my-github>/<my-extension-project>",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/<my-github>/<my-extension-project>.git"
+    },
+    "bugs": {
+        "url": "https://github.com/<my-github>/<my-extension-project>/issues"
+    },
+    "galleryBanner": {
+        "color": "#1e415e",
+        "theme": "dark"
+    },
+    "keywords": [
+        "python",
+        "<pytool-module>"
+    ],
+    "engines": {
+        "vscode": "^1.78.0"
+    },
+    "categories": [
+        "Programming Languages",
+        "Linters",
+        "Formatters"
+    ],
+    "extensionDependencies": [
+        "ms-python.python"
+    ],
+    "capabilities": {
+        "virtualWorkspaces": {
+            "supported": false,
+            "description": "Virtual Workspaces are not supported with <pytool-display-name>."
+        }
+    },
+    "activationEvents": [
+        "onLanguage:python",
+        "workspaceContains:*.py",
+        "onNotebook:jupyter-notebook",
+        "onNotebook:interactive"
+    ],
+    "main": "./dist/extension.js",
+    "scripts": {
+        "vscode:prepublish": "npm run package",
+        "compile": "webpack",
+        "watch": "webpack --watch",
+        "package": "webpack --mode production --devtool source-map --config ./webpack.config.js",
+        "compile-tests": "tsc -p . --outDir out",
+        "watch-tests": "tsc -p . -w --outDir out",
+        "pretest": "npm run compile-tests && npm run compile && npm run lint",
+        "lint": "eslint src",
+        "format-check": "prettier --check 'src/**/*.ts' 'build/**/*.yml' '.github/**/*.yml'",
+        "test": "node ./out/test/runTest.js",
+        "vsce-package": "vsce package -o <pytool-module>.vsix"
+    },
+    "contributes": {
+        "configuration": {
+            "properties": {
+                "<pytool-module>.cwd": {
+                    "default": "${workspaceFolder}",
+                    "description": "Sets the working directory for <pytool-module>. Supported variables: `${workspaceFolder}` (workspace root) and `${fileDirname}` (directory of the current file).",
+                    "scope": "resource",
+                    "type": "string"
+                },
+                "<pytool-module>.args": {
+                    "default": [],
+                    "description": "Arguments passed in. Each argument is a separate item in the array.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "scope": "resource",
+                    "type": "array"
+                },
+                "<pytool-module>.path": {
+                    "default": [],
+                    "description": "When set to a path to <pytool-module> binary, extension will use that. NOTE: Using this option may slowdown server response time.",
+                    "scope": "resource",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "<pytool-module>.importStrategy": {
+                    "default": "useBundled",
+                    "description": "Defines where `<pytool-module>` is imported from. This setting may be ignored if `<pytool-module>.path` is set.",
+                    "enum": [
+                        "useBundled",
+                        "fromEnvironment"
+                    ],
+                    "enumDescriptions": [
+                        "Always use the bundled version of `<pytool-module>`.",
+                        "Use `<pytool-module>` from environment, fallback to bundled version only if `<pytool-module>` not available in the environment."
+                    ],
+                    "scope": "window",
+                    "type": "string"
+                },
+                "<pytool-module>.interpreter": {
+                    "default": [],
+                    "description": "When set to a path to python executable, extension will use that to launch the server and any subprocess.",
+                    "scope": "resource",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "<pytool-module>.showNotifications": {
+                    "default": "off",
+                    "description": "Controls when notifications are shown by this extension.",
+                    "enum": [
+                        "off",
+                        "onError",
+                        "onWarning",
+                        "always"
+                    ],
+                    "enumDescriptions": [
+                        "All notifications are turned off, any errors or warning are still available in the logs.",
+                        "Notifications are shown only in the case of an error.",
+                        "Notifications are shown for errors and warnings.",
+                        "Notifications are show for anything that the server chooses to show."
+                    ],
+                    "scope": "machine",
+                    "type": "string"
+                }
+            }
+        },
+        "commands": [
+            {
+                "title": "Restart Server",
+                "category": "<pytool-display-name>",
+                "command": "<pytool-module>.restart"
+            }
+        ]
+    },
+    "dependencies": {
+        "@vscode/python-environments": "^1.0.0",
+        "@vscode/python-extension": "^1.0.6",
+        "fs-extra": "^11.3.5",
+        "vscode-languageclient": "^8.1.0"
+    },
+    "devDependencies": {
+        "@types/fs-extra": "^11.0.4",
+        "@types/glob": "^8.1.0",
+        "@types/node": "20.x",
+        "@types/vscode": "1.78.0",
+        "@typescript-eslint/eslint-plugin": "^8.62.1",
+        "@typescript-eslint/parser": "^8.57.0",
+        "@vscode/test-electron": "^2.5.2",
+        "@vscode/vsce": "^3.7.1",
+        "eslint": "^10.3.0",
+        "glob": "^13.0.6",
+        "prettier": "^3.8.3",
+        "ts-loader": "^9.6.2",
+        "typescript": "^5.9.3",
+        "webpack": "^5.108.3",
+        "webpack-cli": "^7.1.0"
+    }
+}
