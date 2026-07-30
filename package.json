@@ -44,10 +44,8 @@
         }
     },
     "activationEvents": [
-        "onLanguage:python",
-        "workspaceContains:*.py",
-        "onNotebook:jupyter-notebook",
-        "onNotebook:interactive"
+        "onLanguage:itchy",
+        "workspaceContains:*.itch"
     ],
     "main": "./dist/extension.js",
     "scripts": {
@@ -64,6 +62,13 @@
         "vsce-package": "vsce package -o Itchy LSP.vsix"
     },
     "contributes": {
+        "languages": [
+            {
+                "id": "itchy",
+                "aliases": ["Itchy", "itchy"],
+                "extensions": [".itch"]
+            }
+        ],
         "configuration": {
             "properties": {
                 "Itchy LSP.cwd": {

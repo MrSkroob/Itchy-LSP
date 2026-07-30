@@ -1,3 +1,15 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+
+BUNDLED_LIBS = Path(__file__).resolve().parent.parent / "libs"
+
+if str(BUNDLED_LIBS) not in sys.path:
+    sys.path.insert(0, str(BUNDLED_LIBS))
+
+
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types
 

@@ -13,3 +13,5 @@ pytest
 PyHamcrest
 python-jsonrpc-server
 colorama
+pygls
+lsprotocol
