@@ -101,7 +101,20 @@ def get_defined_functions(prefix: str):
         )
 
     return available_functions
-    
+
+
+def remove_duplicates(items: list[types.CompletionItem]):
+    seen: set[str] = set()
+    unique: list[types.CompletionItem] = items
+
+    for item in items:
+        if item.label in seen:
+            continue
+        seen.add(item.label)
+        unique.append(item)
+
+    return unique
+        
 
 
 def completion_items_for_expected(
@@ -139,8 +152,12 @@ def completion_items_for_expected(
                 items.extend(
                     get_defined_variables(prefix)
                 )
+            if "equation" in path:
+                items.extend(
+                    get_defined_variables(prefix)
+                )
 
-    return items
+    return remove_duplicates(items)
 
 
 
