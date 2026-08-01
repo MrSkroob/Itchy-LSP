@@ -12,12 +12,14 @@ if str(BUNDLED_LIBS) not in sys.path:
 
 
 import logging
+import re
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types
-from itchy.scratch_blocks import SCRATCH_BLOCKS 
+from itchy.scratch_blocks import SCRATCH_BLOCKS, Event
 from itchy.itch_ast import build_ast, Program
-from itchy.parser import Parser, ParseError
-from itchy.assembler import Assembler, CompilerError, SyntaxError
+from itchy.parser import Parser, ExpectedToken, ParseError
+from itchy.tokenizer import Definitions
+from itchy.assembler import Assembler, CompilerError
 
 parser = Parser()
 server = LanguageServer("example-server", "v0.1")
@@ -25,17 +27,121 @@ assembler = Assembler()
 
 cached_ast: Program | None = None
 
-def get_opcode_options(text: str) -> str:
-    index = len(text)
+# this maps literal strings for autocomplete to the Definitions regex in the tokenizer
+KEYWORD_MAP: dict[str, set[str]] = {
+    "Define": {"define"},
+    "ElseIf": {"elseif"},
+    "Return": {"return"},
+    "Shared": {"shared"},
+    "Event": {"event"},
+    "While": {"while"},
+    "Break": {"break"},
+    "Else": {"else"},
+    "For": {"for"},
+    "If": {"if"},
+    "In": {"in"},
+    "Type": {"var", "list", "bool"},
+    "Binop": {"and", "or", "not"}
+}
 
-    while index > 0:
-        char = text[index - 1]
-        if not (char.isalnum() or char == "_"):
-            break
 
-        index -= 1
 
-    return text[index:]
+def remove_completion_prefix(
+    source: str,
+) -> tuple[str, str]:
+    match = re.search(
+        r"[A-Za-z_][A-Za-z0-9_]*$",
+        source,
+    )
+
+    if match is None:
+        return source, ""
+
+    prefix = match.group(0)
+    return source[:match.start()], prefix
+
+
+def get_defined_events(prefix: str):
+    return [types.CompletionItem(label=key, kind=types.CompletionItemKind.Function) 
+            for key in SCRATCH_BLOCKS 
+            if key.startswith(prefix) and isinstance(SCRATCH_BLOCKS[key], Event)]
+
+
+def get_defined_variables(prefix: str):
+    variables: list[types.CompletionItem] = []
+    for _, var_data in assembler.variables.items():
+        if not var_data.name.startswith(prefix):
+            continue
+
+        if ":" in var_data.name:
+            continue
+
+        variables.append(
+            types.CompletionItem(label=var_data.name, kind=types.CompletionItemKind.Variable)
+        )
+
+    return variables
+
+
+def get_defined_functions(prefix: str):
+    available_functions: list[types.CompletionItem] = [types.CompletionItem(label=key, kind=types.CompletionItemKind.Function) 
+                                                       for key in SCRATCH_BLOCKS 
+                                                       if key.startswith(prefix) and not isinstance(SCRATCH_BLOCKS[key], Event)]
+
+    for procedure in assembler.procedures:
+        # hide function-defined stuff
+        if not procedure.startswith(prefix):
+            continue
+
+        if ":" in procedure: 
+            continue
+        
+        available_functions.append(
+            types.CompletionItem(label=procedure, kind=types.CompletionItemKind.Function)
+        )
+
+    return available_functions
+    
+
+
+def completion_items_for_expected(
+    expected: set[ExpectedToken],
+    prefix: str,
+) -> list[types.CompletionItem]:
+    items: list[types.CompletionItem] = []
+
+    for expectation in expected:
+        token_type = expectation.definition
+        path = expectation.path
+
+
+        if token_type.name in KEYWORD_MAP:
+            for keyword in KEYWORD_MAP[token_type.name]:
+                if keyword.startswith(prefix):
+                    items.append(
+                        types.CompletionItem(
+                            label=keyword,
+                            kind=types.CompletionItemKind.Keyword,
+                        )
+                    )
+
+
+        if token_type is Definitions.Symbol:
+            if "eventstat" in path:
+                items.extend(
+                    get_defined_events(prefix)
+                )
+            if "functioncall" in path:
+                items.extend(
+                    get_defined_functions(prefix)
+                )
+            if "varlist1" in path or "var" in path:
+                items.extend(
+                    get_defined_variables(prefix)
+                )
+
+    return items
+
 
 
 def log(message: str):
@@ -54,53 +160,57 @@ def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
     global cached_ast
 
     document = server.workspace.get_text_document(params.text_document.uri)
-    current_line = document.lines[params.position.line].strip()
-    text_before_cursor = current_line[:params.position.character]
-
-    prefix = get_opcode_options(text_before_cursor)
+    # current_line = document.lines[params.position.line].strip()
+    # text_before_cursor = current_line[:params.position.character]
+    pre_source, prefix = remove_completion_prefix(document.source)
 
     try:
-        result = parser.read(document.source)
-        tree = result.tree
-        log(f"Source: {document.source!r}")
-    except ParseError as e:
-        tree = e.previous_valid_tree.tree if e.previous_valid_tree is not None else None
-        log("exists tree: " + str(tree is not None))
+        parsed = parser.read(pre_source)
+        tree = build_ast(parsed.tree)
+        assembler.emit_program(tree)
+    except (ParseError, CompilerError):
+        pass
+
+    expected = parser.expected_items
+
+    # parse_result, expected = parser.expected_at_cursor(pre_source)
+    # if parse_result is not None:
+    #     program = build_ast(parse_result.tree)
+    #     try:
+    #         assembler.prepare()
+    #         assembler.emit_program(program)
+    #     except (CompilerError, SyntaxError):
+    #         pass
+
+    return completion_items_for_expected(expected, prefix)
+
+    # try:
+    #     result = parser.read(document.source)
+    #     tree = result.tree
+    #     log(f"Source: {document.source!r}")
+    # except ParseError:
+    #     tree = parser.recovered_tree
+    #     log("exists tree: " + str(tree is not None))
 
 
-    if tree is not None:        
-        cached_ast = build_ast(tree)
-        available_functions: list[types.CompletionItem] = [types.CompletionItem(label=key, kind=types.CompletionItemKind.Function) for key in SCRATCH_BLOCKS if key.startswith(prefix)]
+    # if tree is not None:        
+    #     cached_ast = build_ast(tree)
+    #     log("Program length: " + str(len(cached_ast.body)))
 
-        log("Program length: " + str(len(cached_ast.body)))
+    #     pre_source, prefix = remove_completion_prefix(text_before_cursor)
 
-        try:
-            assembler.prepare()
-            assembler.emit_program(cached_ast)
+    #     try:
+    #         assembler.prepare()
+    #         assembler.emit_program(cached_ast)
 
-        except (CompilerError, SyntaxError):
-            pass
+    #     except (CompilerError, SyntaxError):
+    #         pass
 
-        for procedure in assembler.procedures:
-            # hide function-defined stuff
-            if ":" in procedure: 
-                continue
-            available_functions.append(
-                types.CompletionItem(label=procedure, kind=types.CompletionItemKind.Function)
-            )
-
+    #     available_functions = get_defined_functions(prefix)
         
-        return available_functions
+    #     return available_functions
 
-    return []
-    
-    # if not current_line.endswith("hello."):
-    #     return []
-
-    # return [
-    #     types.CompletionItem(label="world"),
-    #     types.CompletionItem(label="friend"),
-    # ]
+    # return []
 
 
 if __name__ == "__main__":
