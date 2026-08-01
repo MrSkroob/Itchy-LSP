@@ -6,7 +6,7 @@ Currently supports:
 ..that's it!
 
 # Getting started
-Assuming you have VSCode:
+Assuming you have VSCode and Python 3.10+ installed:
 
 Install the package:
 <img width="1846" height="870" alt="image" src="https://github.com/user-attachments/assets/8133de43-3e37-404e-938e-4792ab3e568d" /> <br />
