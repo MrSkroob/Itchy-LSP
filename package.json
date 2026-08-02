@@ -44,7 +44,6 @@
         }
     },
     "activationEvents": [
-        "onLanguage:itchy",
         "workspaceContains:*.itch"
     ],
     "main": "./dist/extension.js",
@@ -68,6 +67,13 @@
                 "aliases": ["Itchy", "itchy"],
                 "extensions": [".itch"],
                 "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "itchy",
+                "scopeName": "source.itchy",
+                "path": "./bundled/libs/itchy/assets/itchy.tmLanguage.json"
             }
         ],
         "configuration": {
