@@ -17,16 +17,16 @@ import re
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types
 from itchy.scratch_blocks import SCRATCH_BLOCKS, Event
-from itchy.itch_ast import build_ast_with_semantic_tokens, SemanticToken, Program
-from itchy.parser import Parser, ExpectedToken, ParseError, ParsedNode
+from itchy.itch_ast import build_ast_with_semantic_tokens, build_ast, get_semantic_tokens, SemanticToken
+from itchy.parser import Parser, ExpectedToken, ParseError
 from itchy.tokenizer import Definitions
-from itchy.assembler import Assembler, CompilerError
+from itchy.assembler import Assembler, CompilerError, VariableTypes
 
+# parser that tries not to fail so ast can give syntax highlighting to entire file
+persistent_parser = Parser(skip_bad_tokens=True)
 parser = Parser()
 server = LanguageServer("example-server", "v0.1")
 assembler = Assembler()
-
-cached_ast: tuple[Program, list[SemanticToken]] | None = None
 
 # this maps literal strings for autocomplete to the Definitions regex in the tokenizer
 KEYWORD_MAP: dict[str, set[str]] = {
@@ -45,6 +45,11 @@ KEYWORD_MAP: dict[str, set[str]] = {
     "Binop": {"and", "or", "not"}
 }
 
+
+TYPE_COMPLETION = [
+    types.CompletionItem(label=i.value, kind=types.CompletionItemKind.TypeParameter)
+    for i in VariableTypes
+]
 
 
 def remove_completion_prefix(
@@ -141,7 +146,7 @@ def completion_items_for_expected(
                     )
 
 
-        if token_type is Definitions.Symbol:
+        if token_type == Definitions.Symbol:
             if "eventstat" in path:
                 items.extend(
                     get_defined_events(prefix)
@@ -159,6 +164,10 @@ def completion_items_for_expected(
                     get_defined_variables(prefix)
                 )
 
+        if token_type == Definitions.Colon:
+            if "argtype" in path:
+                items.extend(TYPE_COMPLETION)
+
     return remove_duplicates(items)
 
 
@@ -172,9 +181,8 @@ def on_save(params: types.DidSaveTextDocumentParams):
     assembler.prepare()
     
 
-@server.feature(types.TEXT_DOCUMENT_COMPLETION)
+@server.feature(types.TEXT_DOCUMENT_COMPLETION, types.CompletionOptions(trigger_characters=(" ")))
 def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
-    global cached_ast
     document = server.workspace.get_text_document(params.text_document.uri)
     # current_line = document.lines[params.position.line].strip()
     # text_before_cursor = current_line[:params.position.character]
@@ -183,12 +191,11 @@ def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
     parsed = None
     try:
         parsed = parser.read(pre_source)
-        cached_ast = build_ast_with_semantic_tokens(parsed.tree)
-        assert cached_ast is not None
-        assembler.emit_program(cached_ast[0])
+        ast = build_ast(parsed.tree)
+        assert ast is not None
+        assembler.emit_program(ast)
     except (ParseError, CompilerError):
         pass
-
 
     expected = parser.expected_items
     return completion_items_for_expected(expected, prefix)
@@ -315,55 +322,24 @@ def semantic_tokens(params: types.SemanticTokensParams) -> types.SemanticTokens:
     tree = None
 
     try:
-        parsed = parser.read(document.source)
+        parsed = persistent_parser.read(document.source)
         tree = build_ast_with_semantic_tokens(parsed.tree)
     except ParseError as e:
         # pass
         if e.previous_valid_tree is not None:
-            tree = build_ast_with_semantic_tokens(e.previous_valid_tree.tree)
+            tree = build_ast_with_semantic_tokens(e.previous_valid_tree.tree) or get_semantic_tokens()
 
     if tree is None:
-        log("NO TREE")
         return types.SemanticTokens(data=[])
     
     
     tokens = tree[1]
-
-    source_lines = document.source.splitlines()
-
-    for token in parser.tokenizer.read(document.source):
-        log(
-            f"{token.literal!r:<24} "
-            f"{token.line}:{token.char} "
-            f"{token.span}"
-        )
-
-    log("PARSER W/ PADDING:")
-
-    for token in tokens:
-        if not 0 <= token.line < len(source_lines):
-            log(f"INVALID LINE: {token!r}")
-            continue
-
-        line_text = source_lines[token.line]
-        covered_text = line_text[
-            token.character:
-            token.character + token.length
-        ]
-
-        log(
-            f"{token.token_type:<10} "
-            f"{token.line}:{token.character}+{token.length} "
-            f"{covered_text!r}"
-        )
 
     semantic_tokens = encode_semantic_tokens(tokens)
 
     return types.SemanticTokens(
         data=semantic_tokens
     )
-
-    
 
 
 if __name__ == "__main__":
