@@ -84,6 +84,12 @@
                     "scope": "resource",
                     "type": "string"
                 },
+                "Itchy LSP.output": {
+                    "default": "",
+                    "description": "Sets the `.sb3` filepath for your project to compile to.",
+                    "scope": "resource",
+                    "type": "string"
+                },
                 "Itchy LSP.args": {
                     "default": [],
                     "description": "Arguments passed in. Each argument is a separate item in the array.",

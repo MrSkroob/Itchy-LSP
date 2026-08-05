@@ -14,19 +14,42 @@ if str(BUNDLED_LIBS) not in sys.path:
 
 import logging
 import re
+from dataclasses import dataclass
+from typing import Sequence
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types
-from itchy.scratch_blocks import SCRATCH_BLOCKS, Event
-from itchy.itch_ast import build_ast_with_semantic_tokens, build_ast, get_semantic_tokens, SemanticToken
-from itchy.parser import Parser, ExpectedToken, ParseError
+from itchy.shared_templates import DATA_TO_VARIABLE_TYPE
+from itchy.scratch_blocks import SCRATCH_BLOCKS, Event, Field, ReturnType, Menu
+from itchy.itch_ast import build_ast_with_semantic_tokens, ASTBuilder, SemanticToken
+from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
-from itchy.assembler import Assembler, CompilerError, VariableTypes
+from itchy.assembler import Assembler, CompilerError, VariableTypes, ProcedureInfo, VariableData
 
+
+completion_ast = ASTBuilder()
+func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
-persistent_parser = Parser(skip_bad_tokens=True)
-parser = Parser()
+semantic_parser = Parser(skip_bad_tokens=True)
+completions_parser = Parser(skip_bad_tokens=False)
+func_signature_parser = Parser(skip_bad_tokens=False)
+
 server = LanguageServer("example-server", "v0.1")
 assembler = Assembler()
+
+
+
+@dataclass(frozen=True)
+class AssemblerState():
+    variables: dict[str, VariableData]
+    procedures: dict[str, ProcedureInfo]
+
+
+assembler_snapshots: dict[str, AssemblerState] = {
+
+}
+
+
+WORD_CHARS = re.compile(r'[A-Za-z0-9_]*$')
 
 # this maps literal strings for autocomplete to the Definitions regex in the tokenizer
 KEYWORD_MAP: dict[str, set[str]] = {
@@ -41,7 +64,6 @@ KEYWORD_MAP: dict[str, set[str]] = {
     "For": {"for"},
     "If": {"if"},
     "In": {"in"},
-    "Type": {"var", "list", "bool"},
     "Binop": {"and", "or", "not"}
 }
 
@@ -52,154 +74,173 @@ TYPE_COMPLETION = [
 ]
 
 
-def remove_completion_prefix(
-    source: str,
-) -> tuple[str, str]:
-    match = re.search(
-        r"[A-Za-z_][A-Za-z0-9_]*$",
-        source,
-    )
+def remove_completion_prefix(lines: Sequence[str], position: types.Position) -> tuple[str, str]:
+        """
+        returns prefix - used for filtering suggestions
+        rest - everything else. used for parsing
+        """
+        line = lines[position.line] if position.line < len(lines) else ""
+        char = position.character
 
-    if match is None:
-        return source, ""
+        before_cursor = line[:char]
 
-    prefix = match.group(0)
-    return source[:match.start()], prefix
+        match = WORD_CHARS.search(before_cursor)
+        prefix = match.group(0) if match else ""
+        word_start = char - len(prefix)
 
-
-def get_defined_events(prefix: str):
-    return [types.CompletionItem(label=key, kind=types.CompletionItemKind.Function) 
-            for key in SCRATCH_BLOCKS 
-            if key.startswith(prefix) and isinstance(SCRATCH_BLOCKS[key], Event)]
-
-
-def get_defined_variables(prefix: str):
-    variables: list[types.CompletionItem] = []
-    for _, var_data in assembler.variables.items():
-        if not var_data.name.startswith(prefix):
-            continue
-
-        if ":" in var_data.name:
-            continue
-
-        variables.append(
-            types.CompletionItem(label=var_data.name, kind=types.CompletionItemKind.Variable)
+        rest = (
+            "".join(lines[:position.line])
+            + line[:word_start]
         )
 
-    return variables
+        return prefix, rest
 
 
-def get_defined_functions(prefix: str):
-    available_functions: list[types.CompletionItem] = [types.CompletionItem(label=key, kind=types.CompletionItemKind.Function) 
-                                                       for key in SCRATCH_BLOCKS 
-                                                       if key.startswith(prefix) and not isinstance(SCRATCH_BLOCKS[key], Event)]
-
-    for procedure in assembler.procedures:
-        # hide function-defined stuff
-        if not procedure.startswith(prefix):
-            continue
-
-        if ":" in procedure: 
-            continue
-        
-        available_functions.append(
-            types.CompletionItem(label=procedure, kind=types.CompletionItemKind.Function)
-        )
-
-    return available_functions
+class Autocomplete():
+    def __init__(self, document_uri: str):
+        self.uri = document_uri
 
 
-def remove_duplicates(items: list[types.CompletionItem]):
-    seen: set[str] = set()
-    unique: list[types.CompletionItem] = []
-
-    for item in items:
-        if item.label in seen:
-            continue
-
-        seen.add(item.label)
-        unique.append(item)
-
-    return unique
-        
+    def get_defined_events(self, prefix: str):
+        return [types.CompletionItem(label=key, kind=types.CompletionItemKind.Function) 
+                for key in SCRATCH_BLOCKS 
+                if key.startswith(prefix) and isinstance(SCRATCH_BLOCKS[key], Event)]
 
 
-def completion_items_for_expected(
-    expected: set[ExpectedToken],
-    prefix: str,
-) -> list[types.CompletionItem]:
-    items: list[types.CompletionItem] = []
+    def get_defined_variables(self, prefix: str, scope: str | None):
+        variables: list[types.CompletionItem] = []
 
-    for expectation in expected:
-        token_type = expectation.definition
-        path = expectation.path
+        assembler_snapshot = assembler_snapshots.get(self.uri)
+        if assembler_snapshot is None:
+            return variables
+
+        for _, var_data in assembler_snapshot.variables.items():
+            if not var_data.name.startswith(prefix):
+                continue
+
+            if ":" in var_data.name:
+                continue
+
+            if var_data.context != scope:
+                continue
+
+            variables.append(
+                types.CompletionItem(label=var_data.name, kind=types.CompletionItemKind.Variable)
+            )
+
+        return variables
 
 
-        if token_type.name in KEYWORD_MAP:
-            for keyword in KEYWORD_MAP[token_type.name]:
-                if keyword.startswith(prefix):
-                    items.append(
-                        types.CompletionItem(
-                            label=keyword,
-                            kind=types.CompletionItemKind.Keyword,
+    def get_defined_functions(self, prefix: str):
+        available_functions: list[types.CompletionItem] = [types.CompletionItem(label=key, kind=types.CompletionItemKind.Function) 
+                                                        for key in SCRATCH_BLOCKS 
+                                                        if key.startswith(prefix) and not isinstance(SCRATCH_BLOCKS[key], Event)]
+
+        assembler_snapshot = assembler_snapshots.get(self.uri)
+        if assembler_snapshot is None:
+            return available_functions
+
+        for procedure in assembler_snapshot.procedures:
+            # hide function-defined stuff
+            if not procedure.startswith(prefix):
+                continue
+
+            if ":" in procedure: 
+                continue
+            
+            available_functions.append(
+                types.CompletionItem(label=procedure, kind=types.CompletionItemKind.Function)
+            )
+
+        return available_functions
+
+
+    def remove_duplicates(self, items: list[types.CompletionItem]):
+        seen: set[str] = set()
+        unique: list[types.CompletionItem] = []
+
+        for item in items:
+            if item.label in seen:
+                continue
+
+            seen.add(item.label)
+            unique.append(item)
+
+        return unique
+            
+
+    def completion_items_for_expected(
+        self, 
+        expected: set[ExpectedToken],
+        prefix: str,
+        scope: str | None
+    ) -> list[types.CompletionItem]:
+        items: list[types.CompletionItem] = []
+
+        for expectation in expected:
+            token_type = expectation.definition
+            path = expectation.path
+
+
+            if token_type.name in KEYWORD_MAP:
+                for keyword in KEYWORD_MAP[token_type.name]:
+                    if keyword.startswith(prefix):
+                        items.append(
+                            types.CompletionItem(
+                                label=keyword,
+                                kind=types.CompletionItemKind.Keyword,
+                            )
                         )
+
+            if token_type == Definitions.Symbol:
+                if "eventstat" in path:
+                    items.extend(
+                        self.get_defined_events(prefix)
+                    )
+                if "functioncall" in path:
+                    items.extend(
+                        self.get_defined_functions(prefix)
+                    )
+                if "varlist1" in path or "var" in path:
+                    items.extend(
+                        self.get_defined_variables(prefix, scope)
+                    )
+                if "equation" in path:
+                    items.extend(
+                        self.get_defined_variables(prefix, scope)
                     )
 
-
-        if token_type == Definitions.Symbol:
-            if "eventstat" in path:
-                items.extend(
-                    get_defined_events(prefix)
-                )
-            if "functioncall" in path:
-                items.extend(
-                    get_defined_functions(prefix)
-                )
-            if "varlist1" in path or "var" in path:
-                items.extend(
-                    get_defined_variables(prefix)
-                )
-            if "equation" in path:
-                items.extend(
-                    get_defined_variables(prefix)
-                )
-
-        if token_type == Definitions.Colon:
-            if "argtype" in path:
+            if token_type == Definitions.Type:
                 items.extend(TYPE_COMPLETION)
 
-    return remove_duplicates(items)
+        return self.remove_duplicates(items)
 
 
 
 def log(message: str):
     logging.info(message)
-
-
-@server.feature(types.TEXT_DOCUMENT_DID_SAVE)
-def on_save(params: types.DidSaveTextDocumentParams):
-    assembler.prepare()
     
 
-@server.feature(types.TEXT_DOCUMENT_COMPLETION, types.CompletionOptions(trigger_characters=(" ")))
+@server.feature(types.TEXT_DOCUMENT_COMPLETION)
 def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
     document = server.workspace.get_text_document(params.text_document.uri)
-    # current_line = document.lines[params.position.line].strip()
-    # text_before_cursor = current_line[:params.position.character]
-    pre_source, prefix = remove_completion_prefix(document.source)
+    autocomplete = Autocomplete(params.text_document.uri)
+    prefix, source = remove_completion_prefix(document.lines, params.position)
 
     parsed = None
     try:
-        parsed = parser.read(pre_source)
-        ast = build_ast(parsed.tree)
-        assert ast is not None
-        assembler.emit_program(ast)
-    except (ParseError, CompilerError):
+        parsed = completions_parser.read(source)
+        completion_ast.build(parsed.tree)
+        # moved to syntax highlighting because it uses a parser
+        # that doesn't die immediately after the cursor.
+        # this ensures that all available functions can be filled in.
+        # assembler.prepare()
+        # assembler.emit_program(cached_ast)
+    except ParseError:
         pass
 
-    expected = parser.expected_items
-    return completion_items_for_expected(expected, prefix)
-
+    expected = completions_parser.expected_items
+    return autocomplete.completion_items_for_expected(expected, prefix, completion_ast.function_scope)
 
 
 TOKEN_TYPES = {
@@ -306,6 +347,7 @@ def encode_semantic_tokens(
     return data
 
 
+@server.thread()
 @server.feature(types.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL,
                 types.SemanticTokensRegistrationOptions(
                     legend=LEGEND,
@@ -314,20 +356,25 @@ def encode_semantic_tokens(
                     )
                 )
 def semantic_tokens(params: types.SemanticTokensParams) -> types.SemanticTokens:
-    # tree = cached_ast
     document = server.workspace.get_text_document(params.text_document.uri)
-    # current_line = document.lines[params.position.line].strip()
-    # text_before_cursor = current_line[:params.position.character]
-
     tree = None
 
     try:
-        parsed = persistent_parser.read(document.source)
+        semantic_parser.cancel()
+        parsed = semantic_parser.read(document.source)
         tree = build_ast_with_semantic_tokens(parsed.tree)
-    except ParseError as e:
-        # pass
-        if e.previous_valid_tree is not None:
-            tree = build_ast_with_semantic_tokens(e.previous_valid_tree.tree) or get_semantic_tokens()
+        assembler.prepare()
+        assembler.emit_program(tree[0])
+    except (ParseError, CompilerError):
+        pass
+        # if isinstance(e, ParseError):
+        #     if e.previous_valid_tree is not None:
+        #         tree = build_ast_with_semantic_tokens(e.previous_valid_tree.tree) or get_semantic_tokens()
+    
+    assembler_snapshots[params.text_document.uri] = AssemblerState(
+        assembler.variables,
+        assembler.procedures
+    )
 
     if tree is None:
         return types.SemanticTokens(data=[])
@@ -342,6 +389,98 @@ def semantic_tokens(params: types.SemanticTokensParams) -> types.SemanticTokens:
     )
 
 
+@server.feature(types.TEXT_DOCUMENT_SIGNATURE_HELP,
+                types.SignatureHelpOptions(
+                    trigger_characters=("(", ","),
+                    retrigger_characters=(",")
+                ))
+def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | None:
+    document = server.workspace.get_text_document(params.text_document.uri)
+    _, source = remove_completion_prefix(document.lines, params.position)
+
+    assembler_snapshot = assembler_snapshots.get(params.text_document.uri)
+    if assembler_snapshot is None:
+        return None
+
+    parsed: ParseResult | None = None
+    active_parameter = 0
+    try:
+        parsed = func_signature_parser.read(source)
+        func_signature_ast.build(parsed.tree)
+        active_parameter = func_signature_ast.argument_index
+        # moved to syntax highlighting because it uses a parser
+        # that doesn't die immediately after the cursor.
+        # this ensures that all available functions can be filled in.
+        # assembler.prepare()
+        # assembler.emit_program(cached_ast)
+    except ParseError:
+        parsed = func_signature_parser.deepest_partial
+        if parsed is not None:
+            assert isinstance(parsed.tree, ParsedNode)
+            try:
+                func_signature_ast.build(parsed.tree)
+                active_parameter = func_signature_ast.argument_index
+            except ValueError:
+                pass
+
+
+    function_name = func_signature_ast.called_function
+
+    if function_name is None:
+        return None
+
+    function_data = assembler_snapshot.procedures.get(function_name)
+
+    if function_data is None:
+        block_data = SCRATCH_BLOCKS.get(function_name)
+
+        if block_data is None:
+            return None
+
+        arguments = block_data.inputs + block_data.fields
+        argument_names: list[str] = []
+        argument_types: list[VariableTypes] = []
+
+        for i in arguments:
+            if isinstance(i, Menu):
+                argument_names.append(i.field_name or i.name)
+            elif isinstance(i, ReturnType):
+                argument_names.append(i.name)
+                argument_types.append(
+                    DATA_TO_VARIABLE_TYPE[i.return_type]
+                )
+
+        function_data = ProcedureInfo(
+            name=function_name,
+            prototype_id="",
+            proccode="",
+            argument_ids=(),
+            argument_names=tuple(argument_names),
+            argument_defaults=(),
+            argument_types=tuple(argument_types)
+        )
+
+    parameter_count = len(function_data.argument_types)
+    function_label = f"{function_name}({", ".join([f"{function_data.argument_names[i]}: {function_data.argument_types[i]}" for i in range(parameter_count)])})"
+
+    return types.SignatureHelp(
+        signatures=[
+            types.SignatureInformation(
+                label=function_label,
+                parameters=[
+                    types.ParameterInformation(
+                        label=f"{function_data.argument_names[i]}: {function_data.argument_types[i].name}",
+                    )
+                    for i in range(parameter_count)
+                ]
+            ),
+        ],
+        active_signature=0,
+        active_parameter=max(active_parameter - 1, 0)
+    )
+
+    
+    
 if __name__ == "__main__":
     logging.basicConfig(format="[%(levelname)s]: %(message)s", level=logging.DEBUG, filename=LOG_FILE)
     server.start_io()
