@@ -1,7 +1,11 @@
 # The official LSP for the Itchy Language!
 Currently supports:
 - Basic context aware autocomplete
-> variable names, function names, scratch block opcodes
+- variable names, function names, scratch block opcodes
+- decent syntax highlighting
+- method signature help
+
+<img width="529" height="370" alt="image" src="https://github.com/user-attachments/assets/c38e8004-d21a-43e9-9b5c-1965620e8638" />
 
 ..that's it!
 
