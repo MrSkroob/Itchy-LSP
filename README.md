@@ -30,7 +30,7 @@ and save wherever you want to. <br />
 You should know to create and work with python virtual environments.
 
 ## Steps:
-1.Create and activate a python virtual environment for this project in a terminal. Be sure to use the minimum version of python for your tool. This template was written to work with python 3.10 or greater.
+1. Create and activate a python virtual environment for this project in a terminal. Be sure to use the minimum version of python for your tool. This template was written to work with python 3.10 or greater.
 2. Install nox in the activated environment: `python -m pip install nox`.
 3. Add your favorite tool to requirements.in
 4. Run `nox --session setup`.
