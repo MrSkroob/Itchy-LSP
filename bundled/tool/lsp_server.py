@@ -38,16 +38,26 @@ server = LanguageServer("example-server", "v0.1")
 assembler = Assembler()
 
 
+@dataclass(frozen=True)
+class CurrentFunction():
+    name: str
+    current_arg: int
+
 
 @dataclass(frozen=True)
 class AssemblerState():
     variables: dict[str, VariableData]
     procedures: dict[str, ProcedureInfo]
+    messages: dict[str, str]
 
 
 assembler_snapshots: dict[str, AssemblerState] = {
 
 }
+
+
+def clamp(a: int, upper_bound: int, lower_bound: int):
+    return min(max(a, lower_bound), upper_bound)
 
 
 WORD_CHARS = re.compile(r'[A-Za-z0-9_]*$')
@@ -97,6 +107,7 @@ def remove_completion_prefix(lines: Sequence[str], position: types.Position) -> 
     return prefix, rest
 
 
+
 class Autocomplete():
     def __init__(self, document_uri: str):
         self.uri = document_uri
@@ -108,7 +119,7 @@ class Autocomplete():
                 if key.startswith(prefix) and isinstance(SCRATCH_BLOCKS[key], Event)]
 
 
-    def get_defined_variables(self, prefix: str, scope: str | None):
+    def get_defined_variables(self, prefix: str, scope: str | None, is_list: bool | None=None):
         variables: list[types.CompletionItem] = []
 
         assembler_snapshot = assembler_snapshots.get(self.uri)
@@ -123,6 +134,9 @@ class Autocomplete():
                 continue
 
             if var_data.context != scope:
+                continue
+
+            if is_list is not None and var_data.is_list != is_list:
                 continue
 
             variables.append(
@@ -156,6 +170,27 @@ class Autocomplete():
         return available_functions
 
 
+    def get_messages(self, prefix: str):
+        messages: list[types.CompletionItem] = []
+        
+        assembler_snapshot = assembler_snapshots.get(self.uri)
+        if assembler_snapshot is None:
+            return messages
+
+        for message in assembler_snapshot.messages:
+            if not message.startswith(prefix):
+                continue
+
+            if ":" in message:
+                continue
+
+            messages.append(
+                types.CompletionItem(label=f'"{message}"', kind=types.CompletionItemKind.Text)
+            )
+
+        return messages
+
+
     def remove_duplicates(self, items: list[types.CompletionItem]):
         seen: set[str] = set()
         unique: list[types.CompletionItem] = []
@@ -174,48 +209,90 @@ class Autocomplete():
         self, 
         expected: set[ExpectedToken],
         prefix: str,
+        current_function: CurrentFunction | None,
         scope: str | None
     ) -> list[types.CompletionItem]:
         items: list[types.CompletionItem] = []
 
-        for expectation in expected:
-            token_type = expectation.definition
-            path = expectation.path
+        skip_suggestions = False
+
+        if current_function is not None:
+            assembler_state = assembler_snapshots.get(self.uri)
+
+            if assembler_state is not None:
+                func_name = current_function.name
+                scratch_block = SCRATCH_BLOCKS.get(func_name)
+
+                if scratch_block:
+                    parameters = scratch_block.inputs + scratch_block.fields
+
+                    if len(parameters) > 0:
+                        current_parameter = parameters[clamp(current_function.current_arg, len(parameters) - 1, 0)]
+                        skip_suggestions = True
+                        if isinstance(current_parameter, Field):
+                            items.extend([types.CompletionItem(label=f'"{i}"', kind=types.CompletionItemKind.Text) 
+                                        for i in current_parameter.expected
+                                        if i.startswith(prefix)])
+                            match current_parameter.name:
+                                case "LIST":
+                                    items.extend(self.get_defined_variables(prefix, scope, True))
+                                case "VARIABLE":
+                                    items.extend(self.get_defined_variables(prefix, scope, False))
+                                case "BROADCAST_INPUT" | "BROADCAST_OPTION":
+                                    items.extend(self.get_messages(prefix))
+                                case _:
+                                    pass
+                        elif isinstance(current_parameter, Menu):
+                            items.extend([types.CompletionItem(label=f'"{i}"', kind=types.CompletionItemKind.Text) 
+                                        for i in current_parameter.expected
+                                        if i.startswith(prefix)])
+
+                            
+                                
+                            items.extend(self.get_messages(prefix))
+                        else:
+                            skip_suggestions = False
+
+        current_function = None
+
+        if not skip_suggestions:
+            for expectation in expected:
+                token_type = expectation.definition
+                path = expectation.path
 
 
-            if token_type.name in KEYWORD_MAP:
-                for keyword in KEYWORD_MAP[token_type.name]:
-                    if keyword.startswith(prefix):
-                        items.append(
-                            types.CompletionItem(
-                                label=keyword,
-                                kind=types.CompletionItemKind.Keyword,
+                if token_type.name in KEYWORD_MAP:
+                    for keyword in KEYWORD_MAP[token_type.name]:
+                        if keyword.startswith(prefix):
+                            items.append(
+                                types.CompletionItem(
+                                    label=keyword,
+                                    kind=types.CompletionItemKind.Keyword,
+                                )
                             )
+
+                if token_type == Definitions.Symbol:
+                    if "eventstat" in path:
+                        items.extend(
+                            self.get_defined_events(prefix)
+                        )
+                    if "functioncall" in path:
+                        items.extend(
+                            self.get_defined_functions(prefix)
+                        )
+                    if "varlist1" in path or "var" in path:
+                        items.extend(
+                            self.get_defined_variables(prefix, scope)
+                        )
+                    if "equation" in path:
+                        items.extend(
+                            self.get_defined_variables(prefix, scope)
                         )
 
-            if token_type == Definitions.Symbol:
-                if "eventstat" in path:
-                    items.extend(
-                        self.get_defined_events(prefix)
-                    )
-                if "functioncall" in path:
-                    items.extend(
-                        self.get_defined_functions(prefix)
-                    )
-                if "varlist1" in path or "var" in path:
-                    items.extend(
-                        self.get_defined_variables(prefix, scope)
-                    )
-                if "equation" in path:
-                    items.extend(
-                        self.get_defined_variables(prefix, scope)
-                    )
-
-            if token_type == Definitions.Type:
-                items.extend(TYPE_COMPLETION)
+                if token_type == Definitions.Type:
+                    items.extend(TYPE_COMPLETION)
 
         return self.remove_duplicates(items)
-
 
 
 def log(message: str):
@@ -241,7 +318,7 @@ def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
         pass
 
     expected = completions_parser.expected_items
-    return autocomplete.completion_items_for_expected(expected, prefix, completion_ast.function_scope)
+    return autocomplete.completion_items_for_expected(expected, prefix, None, completion_ast.function_scope)
 
 
 TOKEN_TYPES = {
@@ -374,7 +451,8 @@ def semantic_tokens(params: types.SemanticTokensParams) -> types.SemanticTokens:
     
     assembler_snapshots[params.text_document.uri] = AssemblerState(
         assembler.variables,
-        assembler.procedures
+        assembler.procedures,
+        assembler.messages
     )
 
     if tree is None:
