@@ -24,14 +24,15 @@ from itchy.itch_ast import build_ast_with_semantic_tokens, ASTBuilder, SemanticT
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, CompilerError, VariableTypes, ProcedureInfo, VariableData
+from itchy.dummy_nodes import make_dummy_primary
 
 
 completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
-semantic_parser = Parser(skip_bad_tokens=True)
+semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail={"primary": make_dummy_primary().children})
 completions_parser = Parser(skip_bad_tokens=False)
-func_signature_parser = Parser(skip_bad_tokens=False)
+func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary().children})
 
 server = LanguageServer("example-server", "v0.1")
 assembler = Assembler()
@@ -75,25 +76,25 @@ TYPE_COMPLETION = [
 
 
 def remove_completion_prefix(lines: Sequence[str], position: types.Position) -> tuple[str, str]:
-        """
-        returns prefix - used for filtering suggestions
-        rest - everything else. used for parsing
-        """
-        line = lines[position.line] if position.line < len(lines) else ""
-        char = position.character
+    """
+    returns prefix - used for filtering suggestions
+    rest - everything else. used for parsing
+    """
+    line = lines[position.line] if position.line < len(lines) else ""
+    char = position.character
 
-        before_cursor = line[:char]
+    before_cursor = line[:char]
 
-        match = WORD_CHARS.search(before_cursor)
-        prefix = match.group(0) if match else ""
-        word_start = char - len(prefix)
+    match = WORD_CHARS.search(before_cursor)
+    prefix = match.group(0) if match else ""
+    word_start = char - len(prefix)
 
-        rest = (
-            "".join(lines[:position.line])
-            + line[:word_start]
-        )
+    rest = (
+        "".join(lines[:position.line])
+        + line[:word_start]
+    )
 
-        return prefix, rest
+    return prefix, rest
 
 
 class Autocomplete():
@@ -396,7 +397,7 @@ def semantic_tokens(params: types.SemanticTokensParams) -> types.SemanticTokens:
                 ))
 def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | None:
     document = server.workspace.get_text_document(params.text_document.uri)
-    _, source = remove_completion_prefix(document.lines, params.position)
+    prefix, source = remove_completion_prefix(document.lines, params.position)
 
     assembler_snapshot = assembler_snapshots.get(params.text_document.uri)
     if assembler_snapshot is None:
@@ -404,30 +405,32 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
 
     parsed: ParseResult | None = None
     active_parameter = 0
+    function_name = None
     try:
-        parsed = func_signature_parser.read(source)
+        parsed = func_signature_parser.read(source + prefix)
         func_signature_ast.build(parsed.tree)
-        active_parameter = func_signature_ast.argument_index
-        # moved to syntax highlighting because it uses a parser
-        # that doesn't die immediately after the cursor.
-        # this ensures that all available functions can be filled in.
-        # assembler.prepare()
-        # assembler.emit_program(cached_ast)
+
+        if func_signature_ast.called_function is not None:
+            function_name = func_signature_ast.called_function.callee
+            active_parameter = len(func_signature_ast.called_function.args)
+
     except ParseError:
         parsed = func_signature_parser.deepest_partial
         if parsed is not None:
             assert isinstance(parsed.tree, ParsedNode)
             try:
-                func_signature_ast.build(parsed.tree)
-                active_parameter = func_signature_ast.argument_index
+                tree = func_signature_ast.build_functioncall(parsed.tree)
+                function_name = tree.callee
+                active_parameter = len(tree.args)
             except ValueError:
                 pass
 
 
-    function_name = func_signature_ast.called_function
-
     if function_name is None:
         return None
+    
+
+    log(f"{function_name}: {active_parameter}")
 
     function_data = assembler_snapshot.procedures.get(function_name)
 
@@ -460,8 +463,9 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
             argument_types=tuple(argument_types)
         )
 
-    parameter_count = len(function_data.argument_types)
-    function_label = f"{function_name}({", ".join([f"{function_data.argument_names[i]}: {function_data.argument_types[i]}" for i in range(parameter_count)])})"
+    argument_count = len(function_data.argument_types)
+    argument_labels = [f"{function_data.argument_names[i]}: {function_data.argument_types[i].value}" for i in range(argument_count)]
+    function_label = f"{function_name}({', '.join(argument_labels)})"
 
     return types.SignatureHelp(
         signatures=[
@@ -469,9 +473,9 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
                 label=function_label,
                 parameters=[
                     types.ParameterInformation(
-                        label=f"{function_data.argument_names[i]}: {function_data.argument_types[i].name}",
+                        label=i,
                     )
-                    for i in range(parameter_count)
+                    for i in argument_labels
                 ]
             ),
         ],
