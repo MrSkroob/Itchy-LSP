@@ -24,15 +24,15 @@ from itchy.itch_ast import build_ast_with_semantic_tokens, ASTBuilder, SemanticT
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, CompilerError, VariableTypes, ProcedureInfo, VariableData
-from itchy.dummy_nodes import make_dummy_primary
+from itchy.dummy_nodes import make_dummy_primary, RECOVERY_STRATEGIES
 
 
 completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
-semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail={"primary": make_dummy_primary().children})
+semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=RECOVERY_STRATEGIES)
 completions_parser = Parser(skip_bad_tokens=False)
-func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary().children})
+func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary()})
 
 server = LanguageServer("example-server", "v0.1")
 assembler = Assembler()
