@@ -17,6 +17,7 @@ import { loadServerDefaults } from './common/setup';
 import { LS_SERVER_RESTART_DELAY } from './common/constants';
 import { getLSClientTraceLevel } from './common/utilities';
 import { createOutputChannel, onDidChangeConfiguration, registerCommand } from './common/vscodeapi';
+import { log } from 'console';
 
 let lsClient: LanguageClient | undefined;
 let isRestarting = false;
@@ -24,6 +25,7 @@ let restartTimer: NodeJS.Timeout | undefined;
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     // This is required to get server name and module. This should be
     // the first thing that we do in this extension.
+
     const serverInfo = loadServerDefaults();
     const serverName = serverInfo.name;
     const serverId = serverInfo.module;

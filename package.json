@@ -156,8 +156,22 @@
                 "title": "Restart Server",
                 "category": "Itchy LSP",
                 "command": "Itchy LSP.restart"
+            },
+            {
+                "title": "Compile Itchy File",
+                "command": "itchy.runFile",
+                "icon": "$(play)"
             }
-        ]
+        ],
+        "menus": {
+            "editor/title": [
+                {
+                    "command": "itchy.runFile",
+                    "when": "resourceLangId == itchy",
+                    "group": "1_run@1"
+                }
+            ]
+        }
     },
     "dependencies": {
         "@vscode/python-environments": "^1.0.0",

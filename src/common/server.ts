@@ -17,6 +17,8 @@ import { getExtensionSettings, getGlobalSettings, getWorkspaceSettings, ISetting
 import { getLSClientTraceLevel, getProjectRoot } from './utilities';
 import { isVirtualWorkspace } from './vscodeapi';
 
+import { registerClientNotifications } from './register-notifications';
+
 export type IInitOptions = { settings: ISettings[]; globalSettings: ISettings };
 
 async function createServer(
@@ -117,6 +119,7 @@ export async function restartServer(
     );
     try {
         await newLSClient.start();
+        registerClientNotifications(newLSClient);
     } catch (ex) {
         traceError(`Server: Start failed: ${ex}`);
         return undefined;
