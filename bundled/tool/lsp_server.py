@@ -24,22 +24,25 @@ from itchy.itch_ast import build_ast_with_semantic_tokens, ASTBuilder, SemanticT
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, CompilerError, VariableTypes, ProcedureInfo, VariableData
-from itchy.dummy_nodes import make_dummy_primary, RECOVERY_STRATEGIES
+from itchy.dummy_nodes import make_dummy_primary, RECOVERY_STRATEGIES, find_node, find_token, make_wrap
 
 
 completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
-semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=RECOVERY_STRATEGIES)
-completions_parser = Parser(skip_bad_tokens=False)
+semantic_parser = Parser(skip_bad_tokens=True)
+completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary()})
 func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary()})
 
 server = LanguageServer("example-server", "v0.1")
-assembler = Assembler()
+assembler = Assembler(is_strict=False)
 
 
 @dataclass(frozen=True)
 class CurrentFunction():
+    """
+    current_arg is indexed from 1
+    """
     name: str
     current_arg: int
 
@@ -221,9 +224,8 @@ class Autocomplete():
 
             if assembler_state is not None:
                 func_name = current_function.name
-                scratch_block = SCRATCH_BLOCKS.get(func_name)
 
-                if scratch_block:
+                if scratch_block := SCRATCH_BLOCKS.get(func_name):
                     parameters = scratch_block.inputs + scratch_block.fields
 
                     if len(parameters) > 0:
@@ -252,6 +254,10 @@ class Autocomplete():
                             items.extend(self.get_messages(prefix))
                         else:
                             skip_suggestions = False
+                elif proc_info := assembler_state.procedures.get(func_name):
+                    # don't suggest more 
+                    if len(proc_info.argument_names) <= current_function.current_arg:
+                        return items
 
         current_function = None
 
@@ -299,13 +305,16 @@ def log(message: str):
     logging.info(message)
     
 
-@server.feature(types.TEXT_DOCUMENT_COMPLETION)
+@server.feature(types.TEXT_DOCUMENT_COMPLETION, types.CompletionOptions(
+    trigger_characters=["(", ","]
+))
 def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
     document = server.workspace.get_text_document(params.text_document.uri)
     autocomplete = Autocomplete(params.text_document.uri)
     prefix, source = remove_completion_prefix(document.lines, params.position)
 
     parsed = None
+    current_function = None
     try:
         parsed = completions_parser.read(source)
         completion_ast.build(parsed.tree)
@@ -315,10 +324,10 @@ def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
         # assembler.prepare()
         # assembler.emit_program(cached_ast)
     except ParseError:
-        pass
+        current_function = get_function_info(completions_parser, completion_ast)
 
     expected = completions_parser.expected_items
-    return autocomplete.completion_items_for_expected(expected, prefix, None, completion_ast.function_scope)
+    return autocomplete.completion_items_for_expected(expected, prefix, current_function, completion_ast.function_scope)
 
 
 TOKEN_TYPES = {
@@ -450,10 +459,12 @@ def semantic_tokens(params: types.SemanticTokensParams) -> types.SemanticTokens:
         #         tree = build_ast_with_semantic_tokens(e.previous_valid_tree.tree) or get_semantic_tokens()
     
     assembler_snapshots[params.text_document.uri] = AssemblerState(
-        assembler.variables,
-        assembler.procedures,
-        assembler.messages
+        variables=assembler.variables,
+        procedures=assembler.procedures,
+        messages=assembler.messages
     )
+
+    log(str([i for i in assembler.procedures]))
 
     if tree is None:
         return types.SemanticTokens(data=[])
@@ -466,6 +477,57 @@ def semantic_tokens(params: types.SemanticTokensParams) -> types.SemanticTokens:
     return types.SemanticTokens(
         data=semantic_tokens
     )
+
+
+def get_function_info(parser: Parser, ast_builder: ASTBuilder):
+    function_name = None
+    active_parameter = None
+    parsed = parser.deepest_partial
+
+    if parsed is not None:
+        assert isinstance(parsed.tree, ParsedNode)
+        try:
+            if (node := find_node(parsed.tree, "functioncall")) is not None:
+                log("functioncall")
+
+                tree = ast_builder.build_functioncall(node)
+                function_name = tree.callee
+                active_parameter = len(tree.args)
+            elif (node := find_node(parsed.tree, "eventstat")) is not None:
+
+                wrap_node = ParsedNode(
+                    "wrap",
+                    children=make_wrap()
+                )
+                new_children = node.children + (wrap_node, )
+                new_node = ParsedNode(
+                    node.name,
+                    new_children
+                )
+
+                tree = ast_builder.build_eventstat(new_node)
+
+                function_name = tree.name
+                active_parameter = len(tree.params)
+
+                # tells us to stop typehinting at the end of the function
+                if find_token(node, Definitions.CloseBracket):
+                    return None
+
+                log(f"{function_name}: {active_parameter}")
+
+        except ValueError as error:
+            log(f"failed to get function info: {str(error)}")
+
+    if not function_name:
+        return None
+
+    if not active_parameter:
+        return None
+
+    return CurrentFunction(function_name, active_parameter)
+
+            
 
 
 @server.feature(types.TEXT_DOCUMENT_SIGNATURE_HELP,
@@ -482,33 +544,25 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
         return None
 
     parsed: ParseResult | None = None
-    active_parameter = 0
-    function_name = None
+    current_function = None
     try:
         parsed = func_signature_parser.read(source + prefix)
         func_signature_ast.build(parsed.tree)
 
-        if func_signature_ast.called_function is not None:
-            function_name = func_signature_ast.called_function.callee
-            active_parameter = len(func_signature_ast.called_function.args)
+        # if func_signature_ast.called_function is not None:
+        #     function_name = func_signature_ast.called_function.callee
+        #     active_parameter = len(func_signature_ast.called_function.args)
 
     except ParseError:
-        parsed = func_signature_parser.deepest_partial
-        if parsed is not None:
-            assert isinstance(parsed.tree, ParsedNode)
-            try:
-                tree = func_signature_ast.build_functioncall(parsed.tree)
-                function_name = tree.callee
-                active_parameter = len(tree.args)
-            except ValueError:
-                pass
+        current_function = get_function_info(func_signature_parser, func_signature_ast)
+        
 
 
-    if function_name is None:
-        return None
-    
+    if current_function is None:
+        return
 
-    log(f"{function_name}: {active_parameter}")
+    function_name = current_function.name
+    active_parameter = current_function.current_arg
 
     function_data = assembler_snapshot.procedures.get(function_name)
 
@@ -523,13 +577,19 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
         argument_types: list[VariableTypes] = []
 
         for i in arguments:
-            if isinstance(i, Menu):
-                argument_names.append(i.field_name or i.name)
-            elif isinstance(i, ReturnType):
-                argument_names.append(i.name)
-                argument_types.append(
-                    DATA_TO_VARIABLE_TYPE[i.return_type]
-                )
+            match i:
+                case Menu():
+                    argument_names.append(i.field_name or i.name)
+                    argument_types.append(VariableTypes.STRING)
+                case ReturnType():
+                    argument_names.append(i.name)
+                    argument_types.append(
+                        DATA_TO_VARIABLE_TYPE[i.return_type]
+                    )
+                case Field():
+                    argument_names.append(i.name)
+                    argument_types.append(VariableTypes.STRING)
+
 
         function_data = ProcedureInfo(
             name=function_name,
