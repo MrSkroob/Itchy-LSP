@@ -4,7 +4,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-
 LOG_FILE = Path(__file__).resolve().parent / "logging.txt"
 BUNDLED_LIBS = Path(__file__).resolve().parent.parent / "libs"
 
@@ -16,23 +15,24 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Sequence
+from pygls.workspace.text_document import TextDocument, RE_START_WORD, RE_END_WORD
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types
 from itchy.shared_templates import DATA_TO_VARIABLE_TYPE
-from itchy.scratch_blocks import SCRATCH_BLOCKS, Event, Field, ReturnType, Menu
+from itchy.scratch_blocks import SCRATCH_BLOCKS, Event, Reporter, Field, ReturnType, Menu
 from itchy.itch_ast import build_ast_with_semantic_tokens, ASTBuilder, SemanticToken
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, CompilerError, VariableTypes, ProcedureInfo, VariableData
-from itchy.dummy_nodes import make_dummy_primary, RECOVERY_STRATEGIES, find_node, find_token, make_wrap
+from itchy.dummy_nodes import make_dummy_primary, AGGRESSIVE_STRATEGIES, find_node, find_token, make_wrap
 
 
 completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
-semantic_parser = Parser(skip_bad_tokens=True)
-completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary()})
-func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary()})
+semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=AGGRESSIVE_STRATEGIES)
+completions_parser = Parser(skip_bad_tokens=False)
+func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"args": make_dummy_primary()})
 
 server = LanguageServer("example-server", "v0.1")
 assembler = Assembler(is_strict=False)
@@ -62,7 +62,7 @@ assembler_snapshots: dict[str, AssemblerState] = {
 def clamp(a: int, upper_bound: int, lower_bound: int):
     return min(max(a, lower_bound), upper_bound)
 
-
+# RE_START_WORD = re.compile(Definitions.Symbol.value)
 WORD_CHARS = re.compile(r'[A-Za-z0-9_]*$')
 
 # this maps literal strings for autocomplete to the Definitions regex in the tokenizer
@@ -86,6 +86,60 @@ TYPE_COMPLETION = [
     types.CompletionItem(label=i.value, kind=types.CompletionItemKind.TypeParameter)
     for i in VariableTypes
 ]
+
+
+def get_function_info_by_name(assembler_snapshot: AssemblerState, name: str) -> tuple[ProcedureInfo, str] | None:
+    function_data = assembler_snapshot.procedures.get(name)
+    function_type = "function"
+    
+    if function_data is None:
+        block_data = SCRATCH_BLOCKS.get(name)
+
+        if block_data is None:
+            return None
+
+        return_types: set[VariableTypes] = set()
+
+        if isinstance(block_data, Event):
+            function_type = "scratch event"
+        elif isinstance(block_data, Reporter):
+            function_type = "scratch reporter"
+            return_types.add(block_data.return_type)
+        else:
+            function_type = "scratch block"
+
+        arguments = block_data.inputs + block_data.fields
+        argument_names: list[str] = []
+        argument_types: list[VariableTypes] = []
+
+        for i in arguments:
+            match i:
+                case Menu():
+                    argument_names.append(i.field_name or i.name)
+                    argument_types.append(VariableTypes.STRING)
+                case ReturnType():
+                    argument_names.append(i.name)
+                    argument_types.append(
+                        DATA_TO_VARIABLE_TYPE[i.return_type]
+                    )
+                case Field():
+                    argument_names.append(i.name)
+                    argument_types.append(VariableTypes.STRING)
+
+
+        function_data = ProcedureInfo(
+            name=name,
+            prototype_id="",
+            proccode="",
+            argument_ids=(),
+            argument_names=tuple(argument_names),
+            argument_defaults=(),
+            argument_types=tuple(argument_types),
+            return_types=return_types
+        )
+
+    return function_data, function_type
+
 
 
 def remove_completion_prefix(lines: Sequence[str], position: types.Position) -> tuple[str, str]:
@@ -303,8 +357,8 @@ class Autocomplete():
 
 def log(message: str):
     logging.info(message)
-    
 
+    
 @server.feature(types.TEXT_DOCUMENT_COMPLETION, types.CompletionOptions(
     trigger_characters=["(", ","]
 ))
@@ -324,7 +378,7 @@ def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
         # assembler.prepare()
         # assembler.emit_program(cached_ast)
     except ParseError:
-        current_function = get_function_info(completions_parser, completion_ast)
+        current_function = get_editing_parameter(completions_parser, completion_ast)
 
     expected = completions_parser.expected_items
     return autocomplete.completion_items_for_expected(expected, prefix, current_function, completion_ast.function_scope)
@@ -459,12 +513,10 @@ def semantic_tokens(params: types.SemanticTokensParams) -> types.SemanticTokens:
         #         tree = build_ast_with_semantic_tokens(e.previous_valid_tree.tree) or get_semantic_tokens()
     
     assembler_snapshots[params.text_document.uri] = AssemblerState(
-        variables=assembler.variables,
+        variables={i: assembler.variables[assembler.variable_map[i]] for i in assembler.variable_map if assembler.variable_map[i] in assembler.variables},
         procedures=assembler.procedures,
         messages=assembler.messages
     )
-
-    log(str([i for i in assembler.procedures]))
 
     if tree is None:
         return types.SemanticTokens(data=[])
@@ -479,7 +531,7 @@ def semantic_tokens(params: types.SemanticTokensParams) -> types.SemanticTokens:
     )
 
 
-def get_function_info(parser: Parser, ast_builder: ASTBuilder):
+def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder):
     function_name = None
     active_parameter = None
     parsed = parser.deepest_partial
@@ -527,8 +579,6 @@ def get_function_info(parser: Parser, ast_builder: ASTBuilder):
 
     return CurrentFunction(function_name, active_parameter)
 
-            
-
 
 @server.feature(types.TEXT_DOCUMENT_SIGNATURE_HELP,
                 types.SignatureHelpOptions(
@@ -554,8 +604,7 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
         #     active_parameter = len(func_signature_ast.called_function.args)
 
     except ParseError:
-        current_function = get_function_info(func_signature_parser, func_signature_ast)
-        
+        current_function = get_editing_parameter(func_signature_parser, func_signature_ast)
 
 
     if current_function is None:
@@ -564,45 +613,13 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
     function_name = current_function.name
     active_parameter = current_function.current_arg
 
-    function_data = assembler_snapshot.procedures.get(function_name)
+    function_data = get_function_info_by_name(assembler_snapshot, function_name)
 
     if function_data is None:
-        block_data = SCRATCH_BLOCKS.get(function_name)
+        return
 
-        if block_data is None:
-            return None
-
-        arguments = block_data.inputs + block_data.fields
-        argument_names: list[str] = []
-        argument_types: list[VariableTypes] = []
-
-        for i in arguments:
-            match i:
-                case Menu():
-                    argument_names.append(i.field_name or i.name)
-                    argument_types.append(VariableTypes.STRING)
-                case ReturnType():
-                    argument_names.append(i.name)
-                    argument_types.append(
-                        DATA_TO_VARIABLE_TYPE[i.return_type]
-                    )
-                case Field():
-                    argument_names.append(i.name)
-                    argument_types.append(VariableTypes.STRING)
-
-
-        function_data = ProcedureInfo(
-            name=function_name,
-            prototype_id="",
-            proccode="",
-            argument_ids=(),
-            argument_names=tuple(argument_names),
-            argument_defaults=(),
-            argument_types=tuple(argument_types)
-        )
-
-    argument_count = len(function_data.argument_types)
-    argument_labels = [f"{function_data.argument_names[i]}: {function_data.argument_types[i].value}" for i in range(argument_count)]
+    argument_count = len(function_data[0].argument_types)
+    argument_labels = [f"{function_data[0].argument_names[i]}: {function_data[0].argument_types[i].value}" for i in range(argument_count)]
     function_label = f"{function_name}({', '.join(argument_labels)})"
 
     return types.SignatureHelp(
@@ -621,7 +638,89 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
         active_parameter=max(active_parameter - 1, 0)
     )
 
-    
+
+def symbol_at_position(
+    document: TextDocument,
+    position: types.Position,
+) -> tuple[str, types.Range] | tuple[None, None]:
+    """
+    almost identical to how `document.word_at_position` works, but also returns the range (if applicable)
+    """
+    line = document.lines[position.line]
+
+    before = line[:position.character]
+    after = line[position.character:]
+
+    left = re.search(RE_START_WORD, before)
+    right = re.match(RE_END_WORD, after)
+
+    if left is None or right is None:
+        return (None, None)
+
+    left_text = left.group()
+    right_text = right.group()
+    symbol = left_text + right_text
+
+    if not symbol:
+        return (None, None)
+
+    start = position.character - len(left_text)
+    end = position.character + len(right_text)
+
+    return symbol, types.Range(
+        start=types.Position(position.line, start),
+        end=types.Position(position.line, end),
+    )
+
+
+@server.feature(types.TEXT_DOCUMENT_HOVER)
+def hover(params: types.HoverParams) -> types.Hover | None:
+    uri = params.text_document.uri
+
+
+    assembler_state = assembler_snapshots.get(uri)
+    if assembler_state is None:
+        return
+
+    document = server.workspace.get_text_document(uri)
+    word, hover_range = symbol_at_position(document, params.position)
+
+    if word is None:
+        return
+
+    if message := assembler_state.messages.get(word):
+        contents = types.MarkupContent(
+            kind=types.MarkupKind.PlainText,
+            value=f"(message name) {message}"
+        )
+    elif variable := assembler_state.variables.get(word):
+        signature = f"(variable) {variable.name}: {variable.var_type.value}"
+        contents = types.MarkupContent(
+            kind=types.MarkupKind.Markdown,
+            value=f"```itchy\n{signature}\n```"
+        )
+    elif proc_info := get_function_info_by_name(assembler_state, word):
+        proc_type = proc_info[1]
+        proc_data = proc_info[0]
+        if len(proc_data.return_types) > 0:
+            return_type = " | ".join([i.value for i in proc_data.return_types])
+        else:
+            return_type = "nothing"
+        signature = f"({proc_type}) {proc_data.name}({", ".join(f"{proc_data.argument_names[i]}: {proc_data.argument_types[i].value}" 
+                                                              for i in 
+                                                              range(len(proc_data.argument_names)))}) -> {return_type}"
+        contents = types.MarkupContent(
+            kind=types.MarkupKind.Markdown,
+            value=f"```itchy\n{signature}\n```"
+        )
+    else:
+        return
+
+    return types.Hover(
+        contents=contents,
+        range=hover_range
+    )
+
     
 if __name__ == "__main__":
     logging.basicConfig(format="[%(levelname)s]: %(message)s", level=logging.DEBUG, filename=LOG_FILE)
