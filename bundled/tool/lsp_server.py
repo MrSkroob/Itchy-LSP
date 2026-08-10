@@ -24,14 +24,14 @@ from itchy.itch_ast import build_ast_with_semantic_tokens, ASTBuilder, SemanticT
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, CompilerError, VariableTypes, ProcedureInfo, VariableData
-from itchy.dummy_nodes import make_dummy_primary, AGGRESSIVE_STRATEGIES, find_node, find_token, make_wrap
+from itchy.dummy_nodes import make_dummy_primary, AGGRESSIVE_STRATEGIES, RECOVERY_STRATEGIES, find_node, find_token, make_wrap
 
 
 completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
 semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=AGGRESSIVE_STRATEGIES)
-completions_parser = Parser(skip_bad_tokens=False)
+completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary()})
 func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary()})
 
 server = LanguageServer("example-server", "v0.1")
@@ -80,6 +80,12 @@ KEYWORD_MAP: dict[str, set[str]] = {
     "In": {"in"},
     "Binop": {"and", "or", "not"}
 }
+
+
+BOOLEAN_COMPLETION = [
+    types.CompletionItem(label=i, kind=types.CompletionItemKind.Constant)
+    for i in ("true", "false")
+]
 
 
 TYPE_COMPLETION = [
@@ -203,10 +209,25 @@ class Autocomplete():
         return variables
 
 
-    def get_defined_functions(self, prefix: str):
-        available_functions: list[types.CompletionItem] = [types.CompletionItem(label=key, kind=types.CompletionItemKind.Function) 
-                                                        for key in SCRATCH_BLOCKS 
-                                                        if key.startswith(prefix) and not isinstance(SCRATCH_BLOCKS[key], Event)]
+    def get_defined_functions(self, prefix: str, expected_type: VariableTypes | None=None):
+        available_functions: list[types.CompletionItem] = []
+
+        for opcode in SCRATCH_BLOCKS:
+            if not opcode.startswith(prefix):
+                continue
+
+            block = SCRATCH_BLOCKS[opcode]
+
+            if isinstance(block, Event):
+                continue
+
+            if expected_type is not None:
+                if not isinstance(block, Reporter):
+                    continue
+                if block.return_type != expected_type:
+                    continue
+
+            available_functions.append(types.CompletionItem(label=opcode, kind=types.CompletionItemKind.Function))
 
         assembler_snapshot = assembler_snapshots.get(self.uri)
         if assembler_snapshot is None:
@@ -219,6 +240,10 @@ class Autocomplete():
 
             if ":" in procedure: 
                 continue
+
+            if expected_type:
+                if expected_type not in assembler_snapshot.procedures[procedure].return_types:
+                    continue
             
             available_functions.append(
                 types.CompletionItem(label=procedure, kind=types.CompletionItemKind.Function)
@@ -233,6 +258,8 @@ class Autocomplete():
         assembler_snapshot = assembler_snapshots.get(self.uri)
         if assembler_snapshot is None:
             return messages
+
+        prefix = prefix.strip('"')
 
         for message in assembler_snapshot.messages:
             if not message.startswith(prefix):
@@ -271,86 +298,107 @@ class Autocomplete():
     ) -> list[types.CompletionItem]:
         items: list[types.CompletionItem] = []
 
-        skip_suggestions = False
+        expected_type: VariableTypes | None = None
 
         if current_function is not None:
             assembler_state = assembler_snapshots.get(self.uri)
 
             if assembler_state is not None:
                 func_name = current_function.name
+                log(f"Autocompleting: {func_name}")
 
                 if scratch_block := SCRATCH_BLOCKS.get(func_name):
                     parameters = scratch_block.inputs + scratch_block.fields
 
                     if len(parameters) > 0:
-                        current_parameter = parameters[clamp(current_function.current_arg, len(parameters) - 1, 0)]
-                        skip_suggestions = True
+                        current_parameter = parameters[clamp(current_function.current_arg - 1, len(parameters) - 1, 0)]
                         if isinstance(current_parameter, Field):
                             items.extend([types.CompletionItem(label=f'"{i}"', kind=types.CompletionItemKind.Text) 
                                         for i in current_parameter.expected
                                         if i.startswith(prefix)])
-                            match current_parameter.name:
-                                case "LIST":
-                                    items.extend(self.get_defined_variables(prefix, scope, True))
-                                case "VARIABLE":
-                                    items.extend(self.get_defined_variables(prefix, scope, False))
-                                case "BROADCAST_INPUT" | "BROADCAST_OPTION":
-                                    items.extend(self.get_messages(prefix))
-                                case _:
-                                    pass
+                            expected_type = VariableTypes.STRING
                         elif isinstance(current_parameter, Menu):
                             items.extend([types.CompletionItem(label=f'"{i}"', kind=types.CompletionItemKind.Text) 
                                         for i in current_parameter.expected
                                         if i.startswith(prefix)])
-
-                            
-                                
-                            items.extend(self.get_messages(prefix))
+                            expected_type = VariableTypes.STRING
                         else:
-                            skip_suggestions = False
+                            expected_type = DATA_TO_VARIABLE_TYPE[current_parameter.return_type]
+
+                        log(f"Current parameter: {current_parameter.name} for {prefix}")
+
+                        match current_parameter.name:
+                            case "LIST":
+                                items.extend(self.get_defined_variables(prefix, scope, True))
+                            case "VARIABLE":
+                                items.extend(self.get_defined_variables(prefix, scope, False))
+                            case "BROADCAST_INPUT" | "BROADCAST_OPTION":
+                                items.extend(self.get_messages(prefix))
+                                expected_type = VariableTypes.STRING
+                            case _:
+                                pass
+
+                        # if should_skip:
+                            # return items
                 elif proc_info := assembler_state.procedures.get(func_name):
                     # don't suggest more 
                     if len(proc_info.argument_names) <= current_function.current_arg:
                         return items
+                    arg_type = proc_info.argument_types[max(current_function.current_arg - 1, 0)]
+                    match arg_type:
+                        case VariableTypes.BOOL:
+                            items.extend(BOOLEAN_COMPLETION)
+                            expected_type = VariableTypes.BOOL
+                        case VariableTypes.LIST:
+                            items.extend(self.get_defined_variables(prefix, scope, True))
+                        case VariableTypes.NUMBER:
+                            expected_type = VariableTypes.NUMBER
+                        case VariableTypes.STRING:
+                            expected_type = VariableTypes.STRING
+                        case VariableTypes.VAR:
+                            items.extend(self.get_defined_variables(prefix, scope, False))
+                        case _:
+                            pass
+                    # return items
+                
 
         current_function = None
 
-        if not skip_suggestions:
-            for expectation in expected:
-                token_type = expectation.definition
-                path = expectation.path
+        for expectation in expected:
+            token_type = expectation.definition
+            path = expectation.path
 
 
-                if token_type.name in KEYWORD_MAP:
-                    for keyword in KEYWORD_MAP[token_type.name]:
-                        if keyword.startswith(prefix):
-                            items.append(
-                                types.CompletionItem(
-                                    label=keyword,
-                                    kind=types.CompletionItemKind.Keyword,
-                                )
+            if token_type.name in KEYWORD_MAP:
+                for keyword in KEYWORD_MAP[token_type.name]:
+                    if keyword.startswith(prefix):
+                        items.append(
+                            types.CompletionItem(
+                                label=keyword,
+                                kind=types.CompletionItemKind.Keyword,
                             )
-
-                if token_type == Definitions.Symbol:
-                    if "eventstat" in path:
-                        items.extend(
-                            self.get_defined_events(prefix)
-                        )
-                    if "functioncall" in path:
-                        items.extend(
-                            self.get_defined_functions(prefix)
-                        )
-                    if "varlist1" in path or "var" in path:
-                        items.extend(
-                            self.get_defined_variables(prefix, scope)
-                        )
-                    if "equation" in path:
-                        items.extend(
-                            self.get_defined_variables(prefix, scope)
                         )
 
-                if token_type == Definitions.Type:
-                    items.extend(TYPE_COMPLETION)
+            if token_type == Definitions.Symbol:
+                if "eventstat" in path:
+                    items.extend(
+                        self.get_defined_events(prefix)
+                    )
+                if "functioncall" in path:
+                    items.extend(
+                        self.get_defined_functions(prefix, expected_type)
+                    )
+                if "varlist1" in path or "var" in path:
+                    items.extend(
+                        self.get_defined_variables(prefix, scope)
+                    )
+                if "equation" in path:
+                    items.extend(
+                        self.get_defined_variables(prefix, scope)
+                    )
+
+            if token_type == Definitions.Type:
+                items.extend(TYPE_COMPLETION)
 
         return self.remove_duplicates(items)
 
@@ -372,11 +420,6 @@ def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
     try:
         parsed = completions_parser.read(source)
         completion_ast.build(parsed.tree)
-        # moved to syntax highlighting because it uses a parser
-        # that doesn't die immediately after the cursor.
-        # this ensures that all available functions can be filled in.
-        # assembler.prepare()
-        # assembler.emit_program(cached_ast)
     except ParseError:
         current_function = get_editing_parameter(completions_parser, completion_ast)
 
@@ -545,6 +588,9 @@ def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder):
                 tree = ast_builder.build_functioncall(node)
                 function_name = tree.callee
                 active_parameter = len(tree.args)
+
+                if find_token(node, Definitions.CloseBracket):
+                    return None
             elif (node := find_node(parsed.tree, "eventstat")) is not None:
 
                 wrap_node = ParsedNode(
