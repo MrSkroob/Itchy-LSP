@@ -32,7 +32,7 @@ func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
 semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=AGGRESSIVE_STRATEGIES)
 completions_parser = Parser(skip_bad_tokens=False)
-func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"args": make_dummy_primary()})
+func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary()})
 
 server = LanguageServer("example-server", "v0.1")
 assembler = Assembler(is_strict=False)
