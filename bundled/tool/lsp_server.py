@@ -18,7 +18,7 @@ from typing import Sequence
 from pygls.workspace.text_document import TextDocument, RE_START_WORD, RE_END_WORD
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types
-from itchy.shared_templates import DATA_TO_VARIABLE_TYPE
+from itchy.shared_templates import DATA_TO_VARIABLE_TYPE, SourceSpan
 from itchy.scratch_blocks import SCRATCH_BLOCKS, Event, Reporter, Field, ReturnType, Menu
 from itchy.itch_ast import build_ast_with_semantic_tokens, ASTBuilder, SemanticToken
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
@@ -33,6 +33,10 @@ func_signature_ast = ASTBuilder()
 semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=AGGRESSIVE_STRATEGIES)
 completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary()})
 func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary()})
+
+analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=AGGRESSIVE_STRATEGIES)
+analysis_ast = ASTBuilder()
+analysis_assembler = Assembler(is_strict=False)
 
 server = LanguageServer("example-server", "v0.1")
 assembler = Assembler(is_strict=False)
@@ -551,9 +555,7 @@ def semantic_tokens(params: types.SemanticTokensParams) -> types.SemanticTokens:
         assembler.emit_program(tree[0])
     except (ParseError, CompilerError):
         pass
-        # if isinstance(e, ParseError):
-        #     if e.previous_valid_tree is not None:
-        #         tree = build_ast_with_semantic_tokens(e.previous_valid_tree.tree) or get_semantic_tokens()
+
     
     assembler_snapshots[params.text_document.uri] = AssemblerState(
         variables={i: assembler.variables[assembler.variable_map[i]] for i in assembler.variable_map if assembler.variable_map[i] in assembler.variables},
@@ -766,6 +768,69 @@ def hover(params: types.HoverParams) -> types.Hover | None:
         contents=contents,
         range=hover_range
     )
+
+
+def span_to_range(span: SourceSpan) -> types.Range:
+    return types.Range(
+        start=types.Position(
+            line=span.start.line,
+            character=span.start.character
+        ),
+        end=types.Position(
+            line=span.end.line,
+            character=span.end.character
+        )
+    )
+
+
+@server.feature(types.TEXT_DOCUMENT_DID_CHANGE)
+def linter(params: types.DidChangeTextDocumentParams):
+    document = server.workspace.get_text_document(params.text_document.uri)
+    try:
+        parsed = analysis_parser.read(document.source)
+        tree = analysis_ast.build(parsed.tree)
+        analysis_assembler.prepare()
+        analysis_assembler.emit_program(tree)
+    except (ParseError, CompilerError):
+        pass
+
+    linting_errors = analysis_assembler.errors
+    syntax_errors = analysis_parser.accumulated_errors + [i for i in analysis_parser.speculative_errors.values()]
+
+    diagnostics: list[types.Diagnostic] = []
+
+    for error in syntax_errors:
+        if len(error.tokens) == 0:
+            continue
+        token = error.tokens[min(len(error.tokens) - 1, error.pos)]
+        diagnostics.append(
+            types.Diagnostic(
+                range=span_to_range(token.span),
+                message="Invalid syntax",
+                severity=types.DiagnosticSeverity.Error
+            )
+        )
+
+    for error in linting_errors:
+        token = error.error_node
+        if token is None:
+            continue
+
+        diagnostics.append(
+            types.Diagnostic(
+                range=span_to_range(token.span),
+                message=error.message,
+                severity=types.DiagnosticSeverity.Error
+            )
+        )
+
+    server.text_document_publish_diagnostics(
+        types.PublishDiagnosticsParams(
+            uri=params.text_document.uri,
+            diagnostics=diagnostics
+        )
+    )
+
 
     
 if __name__ == "__main__":
