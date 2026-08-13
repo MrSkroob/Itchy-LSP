@@ -23,16 +23,16 @@ from itchy.scratch_blocks import SCRATCH_BLOCKS, Event, Reporter, Field, ReturnT
 from itchy.itch_ast import build_ast_with_semantic_tokens, ASTBuilder, SemanticToken
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
-from itchy.assembler import Assembler, CompilerError, VariableTypes, ProcedureInfo, VariableData
-from itchy.dummy_nodes import make_dummy_primary, AGGRESSIVE_STRATEGIES, RECOVERY_STRATEGIES, find_node, find_token, make_wrap
+from itchy.assembler import Assembler, CompilerError, CompilerWarning, VariableTypes, ProcedureInfo, VariableData
+from itchy.dummy_nodes import make_dummy_primary, AGGRESSIVE_STRATEGIES, find_last_node, find_token, make_wrap
 
 
 completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
 semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=AGGRESSIVE_STRATEGIES)
-completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary()})
-func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary()})
+completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary})
+func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary})
 
 analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=AGGRESSIVE_STRATEGIES)
 analysis_ast = ASTBuilder()
@@ -584,16 +584,16 @@ def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder):
     if parsed is not None:
         assert isinstance(parsed.tree, ParsedNode)
         try:
-            if (node := find_node(parsed.tree, "functioncall")) is not None:
-                log("functioncall")
-
+            if (node := find_last_node(parsed.tree, "functioncall")) is not None:
                 tree = ast_builder.build_functioncall(node)
                 function_name = tree.callee
                 active_parameter = len(tree.args)
 
-                if find_token(node, Definitions.CloseBracket):
-                    return None
-            elif (node := find_node(parsed.tree, "eventstat")) is not None:
+                if found_token := find_token(node, Definitions.CloseBracket):
+                    if not found_token.dummy_token:
+                        return None
+                
+            elif (node := find_last_node(parsed.tree, "eventstat")) is not None:
 
                 wrap_node = ParsedNode(
                     "wrap",
@@ -611,8 +611,9 @@ def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder):
                 active_parameter = len(tree.params)
 
                 # tells us to stop typehinting at the end of the function
-                if find_token(node, Definitions.CloseBracket):
-                    return None
+                if found_token := find_token(node, Definitions.CloseBracket):
+                    if not found_token.dummy_token:
+                        return None
 
                 log(f"{function_name}: {active_parameter}")
 
@@ -773,12 +774,12 @@ def hover(params: types.HoverParams) -> types.Hover | None:
 def span_to_range(span: SourceSpan) -> types.Range:
     return types.Range(
         start=types.Position(
-            line=span.start.line,
-            character=span.start.character
+            line=span.start.line - 1,
+            character=span.start.character - 1
         ),
         end=types.Position(
-            line=span.end.line,
-            character=span.end.character
+            line=span.end.line - 1,
+            character=span.end.character - 1
         )
     )
 
@@ -787,9 +788,9 @@ def span_to_range(span: SourceSpan) -> types.Range:
 def linter(params: types.DidChangeTextDocumentParams):
     document = server.workspace.get_text_document(params.text_document.uri)
     try:
+        analysis_assembler.prepare()
         parsed = analysis_parser.read(document.source)
         tree = analysis_ast.build(parsed.tree)
-        analysis_assembler.prepare()
         analysis_assembler.emit_program(tree)
     except (ParseError, CompilerError):
         pass
@@ -820,7 +821,8 @@ def linter(params: types.DidChangeTextDocumentParams):
             types.Diagnostic(
                 range=span_to_range(token.span),
                 message=error.message,
-                severity=types.DiagnosticSeverity.Error
+                severity=types.DiagnosticSeverity.Warning if isinstance(error, CompilerWarning) 
+                else types.DiagnosticSeverity.Error
             )
         )
 
