@@ -24,17 +24,17 @@ from itchy.itch_ast import build_ast_with_semantic_tokens, ASTBuilder, SemanticT
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, CompilerError, CompilerWarning, VariableTypes, ProcedureInfo, VariableData
-from itchy.dummy_nodes import make_dummy_primary, AGGRESSIVE_STRATEGIES, find_last_node, find_token, make_wrap
+from itchy.dummy_nodes import make_dummy_primary, ANALYSIS_STRATEGIES, find_last_node, find_token, make_wrap
 
 
 completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
-semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=AGGRESSIVE_STRATEGIES)
+semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary})
 func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary})
 
-analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=AGGRESSIVE_STRATEGIES)
+analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 analysis_ast = ASTBuilder()
 analysis_assembler = Assembler(is_strict=False)
 
@@ -774,12 +774,12 @@ def hover(params: types.HoverParams) -> types.Hover | None:
 def span_to_range(span: SourceSpan) -> types.Range:
     return types.Range(
         start=types.Position(
-            line=span.start.line - 1,
-            character=span.start.character - 1
+            line=max(span.start.line - 1, 0),
+            character=max(span.start.character - 1, 0)
         ),
         end=types.Position(
-            line=span.end.line - 1,
-            character=span.end.character - 1
+            line=max(span.end.line - 1, 0),
+            character=max(span.end.character - 1, 0)
         )
     )
 
