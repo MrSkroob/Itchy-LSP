@@ -11,20 +11,23 @@ if str(BUNDLED_LIBS) not in sys.path:
     sys.path.insert(0, str(BUNDLED_LIBS))
 
 
+import asyncio
 import logging
 import re
-from dataclasses import dataclass
-from typing import Sequence
-from pygls.workspace.text_document import TextDocument, RE_START_WORD, RE_END_WORD
+from enum import Enum
+from dataclasses import dataclass, field
+from typing import Iterable, Sequence
+# from pygls.workspace.text_document import TextDocument, RE_START_WORD, RE_END_WORD
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types
 from itchy.shared_templates import DATA_TO_VARIABLE_TYPE, SourceSpan
 from itchy.scratch_blocks import SCRATCH_BLOCKS, Event, Reporter, Field, ReturnType, Menu
-from itchy.itch_ast import build_ast_with_semantic_tokens, ASTBuilder, SemanticToken
+from itchy.itch_ast import build_ast_with_semantic_tokens, utf16_length, ASTBuilder, SemanticToken
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
-from itchy.assembler import Assembler, CompilerError, CompilerWarning, VariableTypes, ProcedureInfo, VariableData
+from itchy.assembler import Assembler, VariableTypes, ProcedureInfo, VariableData, MessageData, CompilerErrorCodes, SymbolOccurence, SymbolType
 from itchy.dummy_nodes import make_dummy_primary, ANALYSIS_STRATEGIES, find_last_node, find_token, make_wrap
+from itchy.errors import get_message, CompilerError, CompilerWarning
 
 
 completion_ast = ASTBuilder()
@@ -36,10 +39,15 @@ func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"prima
 
 analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 analysis_ast = ASTBuilder()
-analysis_assembler = Assembler(is_strict=False)
+# analysis_assembler = Assembler(is_strict=False)
 
 server = LanguageServer("example-server", "v0.1")
-assembler = Assembler(is_strict=False)
+# assembler = Assembler(is_strict=False)
+
+
+class ResponseErrorCodes(Enum):
+    FILE_NOT_READY = 1
+    SYMBOL_NOT_FOUND = 2
 
 
 @dataclass(frozen=True)
@@ -53,11 +61,17 @@ class CurrentFunction():
 
 @dataclass(frozen=True)
 class AssemblerState():
-    variables: dict[str, VariableData]
+    symbols: list[SymbolOccurence]
+    variables: dict[tuple[str, str | None], VariableData]
     procedures: dict[str, ProcedureInfo]
-    messages: dict[str, str]
+    messages: dict[str, MessageData]
 
+@dataclass()
+class Session():
+    variables: dict[str, VariableData] = field(default_factory=dict[str, VariableData]) 
+    messages: dict[str, MessageData] = field(default_factory=dict[str, MessageData])
 
+session = Session()
 assembler_snapshots: dict[str, AssemblerState] = {
 
 }
@@ -71,18 +85,18 @@ WORD_CHARS = re.compile(r'[A-Za-z0-9_]*$')
 
 # this maps literal strings for autocomplete to the Definitions regex in the tokenizer
 KEYWORD_MAP: dict[str, set[str]] = {
-    "Define": {"define"},
-    "ElseIf": {"elseif"},
-    "Return": {"return"},
-    "Shared": {"shared"},
-    "Event": {"event"},
-    "While": {"while"},
-    "Break": {"break"},
-    "Else": {"else"},
-    "For": {"for"},
-    "If": {"if"},
-    "In": {"in"},
-    "Binop": {"and", "or", "not"}
+    Definitions.Define.name: {"define"},
+    Definitions.ElseIf.name: {"elseif"},
+    Definitions.Return.name: {"return"},
+    Definitions.Shared.name: {"shared"},
+    Definitions.Event.name: {"event"},
+    Definitions.While.name: {"while"},
+    Definitions.Else.name: {"else"},
+    Definitions.Warp.name: {"warp"},
+    Definitions.For.name: {"for"},
+    Definitions.If.name: {"if"},
+    Definitions.In.name: {"in"},
+    Definitions.Binop.name: {"and", "or", "not"}
 }
 
 
@@ -114,7 +128,7 @@ def get_function_info_by_name(assembler_snapshot: AssemblerState, name: str) -> 
             function_type = "scratch event"
         elif isinstance(block_data, Reporter):
             function_type = "scratch reporter"
-            return_types.add(block_data.return_type)
+            return_types = block_data.return_type
         else:
             function_type = "scratch block"
 
@@ -145,7 +159,8 @@ def get_function_info_by_name(assembler_snapshot: AssemblerState, name: str) -> 
             argument_names=tuple(argument_names),
             argument_defaults=(),
             argument_types=tuple(argument_types),
-            return_types=return_types
+            return_types=return_types,
+            definition_location=None
         )
 
     return function_data, function_type
@@ -228,7 +243,7 @@ class Autocomplete():
             if expected_type is not None:
                 if not isinstance(block, Reporter):
                     continue
-                if block.return_type != expected_type:
+                if expected_type not in block.return_type:
                     continue
 
             available_functions.append(types.CompletionItem(label=opcode, kind=types.CompletionItemKind.Function))
@@ -309,7 +324,6 @@ class Autocomplete():
 
             if assembler_state is not None:
                 func_name = current_function.name
-                log(f"Autocompleting: {func_name}")
 
                 if scratch_block := SCRATCH_BLOCKS.get(func_name):
                     parameters = scratch_block.inputs + scratch_block.fields
@@ -328,8 +342,6 @@ class Autocomplete():
                             expected_type = VariableTypes.STRING
                         else:
                             expected_type = DATA_TO_VARIABLE_TYPE[current_parameter.return_type]
-
-                        log(f"Current parameter: {current_parameter.name} for {prefix}")
 
                         match current_parameter.name:
                             case "LIST":
@@ -422,9 +434,12 @@ def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
     parsed = None
     current_function = None
     try:
+        completions_parser.cancel()
         parsed = completions_parser.read(source)
         completion_ast.build(parsed.tree)
-    except ParseError:
+    except (ParseError, InterruptedError) as e:
+        if isinstance(e, InterruptedError):
+            return []
         current_function = get_editing_parameter(completions_parser, completion_ast)
 
     expected = completions_parser.expected_items
@@ -475,7 +490,7 @@ TOKEN_MODIFIER_INDEX = {
 
 
 def encode_semantic_tokens(
-    tokens: list[SemanticToken],
+    tokens: Iterable[SemanticToken],
 ) -> list[int]:
     ordered_tokens = sorted(
         tokens,
@@ -535,6 +550,47 @@ def encode_semantic_tokens(
     return data
 
 
+def syntax_highlight_document(uri: str):
+    document = server.workspace.get_text_document(uri)
+    assembler = Assembler(uri, is_strict=False, compile_with_warnings=True)
+    tree = None
+
+    try:
+        semantic_parser.cancel()
+        parsed = semantic_parser.read(document.source)
+        tree = build_ast_with_semantic_tokens(parsed.tree)
+
+        # we populate the assembler with shared variables and messages from other documents.
+        assembler.prepare()
+        assembler.emit_program(tree[0])
+    except (ParseError, CompilerError, InterruptedError) as e:
+        if isinstance(e, InterruptedError):
+            return types.SemanticTokens(data=[])
+    
+
+    if tree is None:
+        return None
+
+
+    for symbol in assembler.symbols:
+        tree[1][symbol.span] = SemanticToken(
+            symbol.span.start.line - 1,
+            symbol.span.start.character - 1,
+            utf16_length(symbol.name),
+            symbol.symbol_type
+        )
+
+    
+    tokens = tree[1]
+
+    semantic_tokens = encode_semantic_tokens(tokens.values())
+
+    return types.SemanticTokens(
+        data=semantic_tokens
+    )
+
+
+
 @server.thread()
 @server.feature(types.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL,
                 types.SemanticTokensRegistrationOptions(
@@ -543,38 +599,29 @@ def encode_semantic_tokens(
                     range=False
                     )
                 )
-def semantic_tokens(params: types.SemanticTokensParams) -> types.SemanticTokens:
-    document = server.workspace.get_text_document(params.text_document.uri)
-    tree = None
+def semantic_tokens(params: types.SemanticTokensParams) -> types.SemanticTokens | None:
+    return syntax_highlight_document(params.text_document.uri)
 
-    try:
-        semantic_parser.cancel()
-        parsed = semantic_parser.read(document.source)
-        tree = build_ast_with_semantic_tokens(parsed.tree)
-        assembler.prepare()
-        assembler.emit_program(tree[0])
-    except (ParseError, CompilerError):
-        pass
 
-    
-    assembler_snapshots[params.text_document.uri] = AssemblerState(
-        variables={i: assembler.variables[assembler.variable_map[i]] for i in assembler.variable_map if assembler.variable_map[i] in assembler.variables},
-        procedures=assembler.procedures,
-        messages=assembler.messages
-    )
+def get_function_name(parser: Parser, ast_builder: ASTBuilder):
+    function_name = None
+    parsed = parser.deepest_partial
 
-    if tree is None:
-        return types.SemanticTokens(data=[])
-    
-    
-    tokens = tree[1]
+    if parsed is not None:
+        assert isinstance(parsed.tree, ParsedNode)
+        try:
+            if (node := find_last_node(parsed.tree, "function")) is not None:
+                tree = ast_builder.build_function(node)
+                function_name = tree.name
 
-    semantic_tokens = encode_semantic_tokens(tokens)
+            
+        except (ValueError, IndexError) as error:
+            log(f"failed to get function info: {str(error)}")
 
-    return types.SemanticTokens(
-        data=semantic_tokens
-    )
+    if not function_name:
+        return None
 
+    return function_name
 
 def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder):
     function_name = None
@@ -615,10 +662,9 @@ def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder):
                     if not found_token.dummy_token:
                         return None
 
-                log(f"{function_name}: {active_parameter}")
+        except ValueError:
+            pass
 
-        except ValueError as error:
-            log(f"failed to get function info: {str(error)}")
 
     if not function_name:
         return None
@@ -688,38 +734,28 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
     )
 
 
-def symbol_at_position(
-    document: TextDocument,
+def position_in_span(
     position: types.Position,
-) -> tuple[str, types.Range] | tuple[None, None]:
-    """
-    almost identical to how `document.word_at_position` works, but also returns the range (if applicable)
-    """
-    line = document.lines[position.line]
-
-    before = line[:position.character]
-    after = line[position.character:]
-
-    left = re.search(RE_START_WORD, before)
-    right = re.match(RE_END_WORD, after)
-
-    if left is None or right is None:
-        return (None, None)
-
-    left_text = left.group()
-    right_text = right.group()
-    symbol = left_text + right_text
-
-    if not symbol:
-        return (None, None)
-
-    start = position.character - len(left_text)
-    end = position.character + len(right_text)
-
-    return symbol, types.Range(
-        start=types.Position(position.line, start),
-        end=types.Position(position.line, end),
+    length: int,
+    span: SourceSpan,
+) -> bool:
+    return (
+        span.start.line - 1 == position.line
+        and span.start.character - 1 <= position.character < (span.start.character - 1) + length
     )
+
+
+def symbol_at_position(
+    symbols: list[SymbolOccurence],
+    position: types.Position,
+) -> SymbolOccurence | None:
+    for symbol in symbols:
+        if symbol.span.start.line == -1:
+            continue
+        if position_in_span(position, utf16_length(symbol.name), symbol.span):
+            return symbol
+
+    return None
 
 
 @server.feature(types.TEXT_DOCUMENT_HOVER)
@@ -731,39 +767,46 @@ def hover(params: types.HoverParams) -> types.Hover | None:
     if assembler_state is None:
         return
 
-    document = server.workspace.get_text_document(uri)
-    word, hover_range = symbol_at_position(document, params.position)
+    word = symbol_at_position(assembler_state.symbols, params.position)
 
     if word is None:
-        return
+        return 
 
-    if message := assembler_state.messages.get(word):
-        contents = types.MarkupContent(
-            kind=types.MarkupKind.PlainText,
-            value=f"(message name) {message}"
-        )
-    elif variable := assembler_state.variables.get(word):
-        signature = f"(variable) {variable.name}: {variable.var_type.value}"
-        contents = types.MarkupContent(
-            kind=types.MarkupKind.Markdown,
-            value=f"```itchy\n{signature}\n```"
-        )
-    elif proc_info := get_function_info_by_name(assembler_state, word):
-        proc_type = proc_info[1]
-        proc_data = proc_info[0]
-        if len(proc_data.return_types) > 0:
-            return_type = " | ".join([i.value for i in proc_data.return_types])
-        else:
-            return_type = "nothing"
-        signature = f"({proc_type}) {proc_data.name}({", ".join(f"{proc_data.argument_names[i]}: {proc_data.argument_types[i].value}" 
-                                                              for i in 
-                                                              range(len(proc_data.argument_names)))}) -> {return_type}"
-        contents = types.MarkupContent(
-            kind=types.MarkupKind.Markdown,
-            value=f"```itchy\n{signature}\n```"
-        )
-    else:
-        return
+    contents = f"({word.symbol_type}) {word.name}"
+
+    match word.symbol_type:
+        case SymbolType.FUNCTION | SymbolType.EVENT:
+            proc_info = get_function_info_by_name(assembler_state, word.name)
+
+            if not proc_info:
+                return
+
+            proc_type = proc_info[1]
+            proc_data = proc_info[0]
+            if len(proc_data.return_types) > 0:
+                return_type = " | ".join([i.value for i in proc_data.return_types])
+            else:
+                return_type = "nothing"
+            signature = f"({proc_type}) {proc_data.name}({", ".join(f"{proc_data.argument_names[i]}: {proc_data.argument_types[i].value}" 
+                                                                for i in 
+                                                                range(len(proc_data.argument_names)))}) -> {return_type}"
+            contents = types.MarkupContent(
+                kind=types.MarkupKind.Markdown,
+                value=f"```itchy\n{signature}\n```"
+            )
+        case SymbolType.VARIABLE:
+            variable = assembler_state.variables.get((word.name, None))
+            if not variable:
+                return
+            contents += f": {variable.var_type.value}"
+        case SymbolType.PARAMETER:
+            variable = assembler_state.variables.get((word.name, word.context))
+            if not variable:
+                return
+            contents += f": {variable.var_type.value}"
+
+    hover_range = span_to_range(word.span)
+
 
     return types.Hover(
         contents=contents,
@@ -784,57 +827,374 @@ def span_to_range(span: SourceSpan) -> types.Range:
     )
 
 
-@server.feature(types.TEXT_DOCUMENT_DID_CHANGE)
-def linter(params: types.DidChangeTextDocumentParams):
-    document = server.workspace.get_text_document(params.text_document.uri)
+@server.feature(types.TEXT_DOCUMENT_CODE_ACTION,
+                types.CodeActionOptions(
+                    code_action_kinds=[types.CodeActionKind.QuickFix]
+                ))
+def code_action(params: types.CodeActionParams) -> list[types.CodeAction]:
+    actions: list[types.CodeAction] = []
+    uri = params.text_document.uri
+
+    for diagnostic in params.context.diagnostics:
+        match diagnostic.code:
+            case CompilerErrorCodes.UNDEFINED_VARIABLE:
+                if diagnostic.data is None:
+                    continue
+
+                assembler_state = assembler_snapshots.get(uri)
+                line = 0
+                if assembler_state is not None:
+                    line = sys.maxsize
+                    
+                    for key, variable in assembler_state.variables.items():
+                        if key[1] is not None:
+                            continue
+                        if variable.definition_location is None:
+                            continue
+                        if variable.definition_location.start.line < line:
+                            line = variable.definition_location.start.line
+
+
+                name = diagnostic.data["name"]
+
+                edit = types.TextEdit(
+                    range=types.Range(
+                        start=types.Position(line - 1, 0),
+                        end=types.Position(line - 1, 0)
+                    ),
+                    new_text = f"var {name}\n"
+                )
+
+                actions.append(
+                    types.CodeAction(
+                        title="Define variable",
+                        kind=types.CodeActionKind.QuickFix,
+                        diagnostics=[diagnostic],
+                        edit=types.WorkspaceEdit(
+                            changes={
+                                uri: [edit]
+                            }
+                        )
+                    )
+                )
+            case CompilerErrorCodes.REMOVE_RETURN:
+                edit = types.TextEdit(
+                    range=diagnostic.range,
+                    new_text=""
+                )
+
+                actions.append(
+                    types.CodeAction(
+                        title="Remove return statement",
+                        kind=types.CodeActionKind.QuickFix,
+                        diagnostics=[diagnostic],
+                        edit=types.WorkspaceEdit(
+                            changes={
+                                uri: [edit],
+                            }
+                        ),
+                        is_preferred=True
+                    )
+                )
+            case _:
+                pass
+
+    return actions
+
+
+def lint_document(uri: str):
+    """
+    Lints a single document. Returns True if the namespace has updated. 
+    """
+    log(f"Linting document: {uri}")
+    document = server.workspace.get_text_document(uri)
+    assembler = Assembler(uri, is_strict=False, compile_with_warnings=True)
+    updated_globals = False
     try:
-        analysis_assembler.prepare()
+        analysis_parser.cancel()
         parsed = analysis_parser.read(document.source)
         tree = analysis_ast.build(parsed.tree)
-        analysis_assembler.emit_program(tree)
-    except (ParseError, CompilerError):
-        pass
+        assembler.prepare(global_messages=session.messages, global_variables=session.variables)
+        assembler.emit_program(tree)
+    except (ParseError, CompilerError, InterruptedError) as e:
+        if isinstance(e, InterruptedError):
+            return updated_globals
 
-    linting_errors = analysis_assembler.errors
-    syntax_errors = analysis_parser.accumulated_errors + [i for i in analysis_parser.speculative_errors.values()]
+    variables: dict[tuple[str, str | None], VariableData] = {}
+
+    # existing_snapshot = assembler_snapshots.get(uri)
+
+    # if existing_snapshot is not None:
+    #     for variable, variable_data in existing_snapshot.variables.items():
+    #         if not variable_data.shared:
+    #             continue
+    #         if variable not in assembler.variable_map:
+    #             updated_globals = True
+    #             assembler.mark_variable_for_deletion.add(variable[0])
+    
+    for key, var_id in assembler.variable_map.items():
+        variables[key] = assembler.variables[var_id]
+
+    
+    assembler_snapshots[uri] = AssemblerState(
+        symbols=assembler.symbols,
+        variables=variables,
+        procedures=assembler.procedures,
+        messages=assembler.messages
+    )
+
+
+    # temp_deleted_variables: set[str] = set()
+
+
+    for var_name in assembler.mark_variable_for_deletion:
+        if var_name in session.variables:
+            # temp_deleted_variables.add(var_name)
+            updated_globals = True
+            del session.variables[var_name]
+
+
+    for message in assembler.mark_message_for_deletion:
+        if message in session.messages:
+            del session.messages[message]
+
+
+    for _, var_data in assembler.variables.items():
+        if not var_data.shared:
+            continue
+
+        if var_data.name in assembler.mark_variable_for_deletion:
+            # if var_data.name in temp_deleted_variables:
+            #     # means these are actually premanently deleted rather than
+            #     # redefined
+            #     updated_globals = True
+            continue
+
+        session.variables[var_data.name] = var_data
+
+
+    for message, message_id in assembler.messages.items():
+        session.messages[message] = message_id
+
+
+    linting_errors = assembler.errors
+    syntax_errors = list(analysis_parser.speculative_errors.values()) + \
+        [i for i in analysis_parser.accumulated_errors if i.pos not in analysis_parser.speculative_errors]
 
     diagnostics: list[types.Diagnostic] = []
+    seen: set[tuple[int, int]] = set()
 
     for error in syntax_errors:
         if len(error.tokens) == 0:
             continue
+        if (error.pos, -1) in seen:
+            continue
+        seen.add((error.pos, -1))
         token = error.tokens[min(len(error.tokens) - 1, error.pos)]
+        message = get_message(error, analysis_parser.expected)
         diagnostics.append(
             types.Diagnostic(
                 range=span_to_range(token.span),
-                message="Invalid syntax",
-                severity=types.DiagnosticSeverity.Error
+                message=message,
+                severity=types.DiagnosticSeverity.Error,
+                data={
+                    "token": token
+                }
             )
         )
 
     for error in linting_errors:
-        token = error.error_node
-        if token is None:
+        node = error.error_node
+        if node is None:
             continue
+
+        if node.span.start.line == -1:
+            continue
+
+        if not error.error_node:
+            continue
+        key = (error.error_node.span.start.line, error.error_node.span.start.character)
+
+        if key in seen:
+            continue
+
+        seen.add(key)
 
         diagnostics.append(
             types.Diagnostic(
-                range=span_to_range(token.span),
+                range=span_to_range(node.span),
                 message=error.message,
                 severity=types.DiagnosticSeverity.Warning if isinstance(error, CompilerWarning) 
-                else types.DiagnosticSeverity.Error
+                else types.DiagnosticSeverity.Error,
+                code=error.error_code,
+                data=error.data
             )
         )
 
     server.text_document_publish_diagnostics(
         types.PublishDiagnosticsParams(
-            uri=params.text_document.uri,
+            uri=uri,
             diagnostics=diagnostics
         )
     )
 
+    return updated_globals
 
+
+
+# linting_documents: set[str] = set()
+
+
+def lint_documents_with_changes(uri: str):
+    """
+    Lints a single document, but will update other documents if the globals have changed.
+    """
+    globals_changed = lint_document(uri)
+    if globals_changed:
+        for other_uri in server.workspace.text_documents:
+            if other_uri == uri:
+                continue
+            lint_document(other_uri)
+
+
+@server.feature(types.WORKSPACE_DID_DELETE_FILES)
+def did_delete_files(params: types.DeleteFilesParams):
+    session.messages.clear()
+    session.variables.clear()
+
+    for file in params.files:
+        uri = file.uri
+        if uri in assembler_snapshots:
+            del assembler_snapshots[uri]
+
+
+@server.feature(types.TEXT_DOCUMENT_DID_CLOSE)
+def did_close(params: types.DidCloseTextDocumentParams):
+    # clear any diagnostics that we had before
+    uri = params.text_document.uri
     
+
+    server.text_document_publish_diagnostics(
+        types.PublishDiagnosticsParams(
+            uri=uri,
+            diagnostics=[]
+        )
+    )
+
+
+@server.feature(types.TEXT_DOCUMENT_DID_OPEN)
+def on_open(params: types.DidOpenTextDocumentParams):
+    syntax_highlight_document(params.text_document.uri)
+    lint_documents_with_changes(params.text_document.uri)
+
+
+@server.feature(types.TEXT_DOCUMENT_DID_CHANGE)
+async def linter(params: types.DidChangeTextDocumentParams):
+    uri = params.text_document.uri
+    version = params.text_document.version
+
+    # Debounce rapid edits so we only lint the latest document state.
+    await asyncio.sleep(0.1)
+
+    document = server.workspace.get_text_document(uri)
+    if document.version != version:
+        return
+
+    lint_documents_with_changes(uri)
+
+
+@server.feature(types.TEXT_DOCUMENT_DEFINITION)
+def goto_definition(params: types.DefinitionParams) -> types.Location | None:
+    uri = params.text_document.uri
+    assembler_state = assembler_snapshots.get(params.text_document.uri)
+    if assembler_state is None:
+        return
+
+    symbol = symbol_at_position(assembler_state.symbols, params.position)
+    if symbol is None:
+        return
+
+    location = symbol.definition_location
+
+    if location is None:
+        for other_uri, state in assembler_snapshots.items():
+            key = (symbol.name, None)
+            
+            variable = state.variables.get(key)
+            if variable is None:
+                continue
+
+            if variable.definition_location is not None:
+                uri = other_uri
+                location = variable.definition_location
+                break
+
+    if location is None:
+        return
+
+    return types.Location(
+        uri=uri,
+        range=span_to_range(location)
+    )
+
+
+def replace_symbol(uri: str, symbol: SymbolOccurence, original: str, replace_with: str) -> list[types.TextEdit]:
+    assembler_state = assembler_snapshots.get(uri)
+    if assembler_state is None:
+        return []
+
+    edits: list[types.TextEdit] = []
+    
+    for other_symbol in assembler_state.symbols:
+        if other_symbol.span.start.line == -1:
+            continue
+
+        if other_symbol.name != original:
+            continue
+        
+        if symbol.symbol_type == other_symbol.symbol_type:
+            edits.append(types.TextEdit(
+                range=span_to_range(other_symbol.span),
+                new_text=replace_with
+            ))
+
+    return edits
+
+
+@server.feature(types.TEXT_DOCUMENT_RENAME)
+def rename(params: types.RenameParams) -> types.WorkspaceEdit | types.ResponseError | None:
+    current_uri = params.text_document.uri
+    assembler_state = assembler_snapshots.get(current_uri)
+    if assembler_state is None:
+        return types.ResponseError(code=ResponseErrorCodes.FILE_NOT_READY.value, message="File not finished linting. Please try again later.")
+    
+    symbol = symbol_at_position(assembler_state.symbols, params.position)
+    if symbol is None:
+        return None
+
+    edits: dict[str, list[types.TextEdit]] = {}
+
+    ignore_other_uris = True
+    if symbol.symbol_type == SymbolType.VARIABLE:
+        variable = assembler_state.variables.get((symbol.name, symbol.context))
+        if variable is None:
+            return types.ResponseError(code=ResponseErrorCodes.SYMBOL_NOT_FOUND.value, message="Symbol not found.")
+
+        # only replace variable if it's a shared variable
+        if variable.shared:
+            ignore_other_uris = False
+
+
+    for uri in assembler_snapshots:
+        if uri != current_uri and ignore_other_uris:
+            continue
+        edits[uri] = replace_symbol(uri, symbol, symbol.name, params.new_name)
+
+    return types.WorkspaceEdit(
+        changes=edits
+    )
+
+
 if __name__ == "__main__":
     logging.basicConfig(format="[%(levelname)s]: %(message)s", level=logging.DEBUG, filename=LOG_FILE)
     server.start_io()
