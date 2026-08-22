@@ -741,7 +741,7 @@ def position_in_span(
 ) -> bool:
     return (
         span.start.line - 1 == position.line
-        and span.start.character - 1 <= position.character < (span.start.character - 1) + length
+        and span.start.character - 1 <= position.character < span.start.character + length
     )
 
 
@@ -964,13 +964,12 @@ def lint_document(uri: str):
             continue
 
         if var_data.name in assembler.mark_variable_for_deletion:
-            # if var_data.name in temp_deleted_variables:
-            #     # means these are actually premanently deleted rather than
-            #     # redefined
-            #     updated_globals = True
             continue
 
         session.variables[var_data.name] = var_data
+
+
+    log(str([i for i in session.variables]))
 
 
     for message, message_id in assembler.messages.items():
@@ -1189,6 +1188,8 @@ def rename(params: types.RenameParams) -> types.WorkspaceEdit | types.ResponseEr
         if uri != current_uri and ignore_other_uris:
             continue
         edits[uri] = replace_symbol(uri, symbol, symbol.name, params.new_name)
+        # lint_document(uri)
+        lint_documents_with_changes(current_uri)
 
     return types.WorkspaceEdit(
         changes=edits
