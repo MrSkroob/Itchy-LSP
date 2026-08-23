@@ -921,16 +921,7 @@ def lint_document(uri: str):
             return updated_globals
 
     variables: dict[tuple[str, str | None], VariableData] = {}
-
-    # existing_snapshot = assembler_snapshots.get(uri)
-
-    # if existing_snapshot is not None:
-    #     for variable, variable_data in existing_snapshot.variables.items():
-    #         if not variable_data.shared:
-    #             continue
-    #         if variable not in assembler.variable_map:
-    #             updated_globals = True
-    #             assembler.mark_variable_for_deletion.add(variable[0])
+    
     
     for key, var_id in assembler.variable_map.items():
         variables[key] = assembler.variables[var_id]
@@ -967,9 +958,6 @@ def lint_document(uri: str):
             continue
 
         session.variables[var_data.name] = var_data
-
-
-    log(str([i for i in session.variables]))
 
 
     for message, message_id in assembler.messages.items():
@@ -1022,7 +1010,7 @@ def lint_document(uri: str):
         diagnostics.append(
             types.Diagnostic(
                 range=span_to_range(node.span),
-                message=error.message,
+                message=f"({error.__class__.__name__}) {error.message}",
                 severity=types.DiagnosticSeverity.Warning if isinstance(error, CompilerWarning) 
                 else types.DiagnosticSeverity.Error,
                 code=error.error_code,
