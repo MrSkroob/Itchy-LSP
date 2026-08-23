@@ -64,8 +64,13 @@
         "languages": [
             {
                 "id": "itchy",
-                "aliases": ["Itchy", "itchy"],
-                "extensions": [".itch"],
+                "aliases": [
+                    "Itchy",
+                    "itchy"
+                ],
+                "extensions": [
+                    ".itch"
+                ],
                 "configuration": "./language-configuration.json"
             }
         ],
@@ -163,6 +168,7 @@
         "@vscode/python-environments": "^1.0.0",
         "@vscode/python-extension": "^1.0.6",
         "fs-extra": "^11.3.5",
+        "vsce": "^2.15.0",
         "vscode-languageclient": "^8.1.0"
     },
     "devDependencies": {
