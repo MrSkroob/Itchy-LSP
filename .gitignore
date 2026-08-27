@@ -11,3 +11,4 @@ bundled/libs/
 **/.vs
 *.js
 logging.txt
+*.vsix
