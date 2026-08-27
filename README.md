@@ -4,6 +4,8 @@ Currently supports:
 - Syntax Highlighting
 - Hover
 - Linting
+- Rename symbols
+- Go to definition
 
 <img width="529" height="370" alt="image" src="https://github.com/user-attachments/assets/c38e8004-d21a-43e9-9b5c-1965620e8638" />
 
