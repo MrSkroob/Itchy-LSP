@@ -573,13 +573,13 @@ def syntax_highlight_document(uri: str):
         return None
 
 
-    for symbol in assembler.symbols:
-        tree[1][symbol.span] = SemanticToken(
-            symbol.span.start.line - 1,
-            symbol.span.start.character - 1,
-            utf16_length(symbol.name),
-            symbol.symbol_type
-        )
+    # for symbol in assembler.symbols:
+    #     tree[1][symbol.span] = SemanticToken(
+    #         symbol.span.start.line - 1,
+    #         symbol.span.start.character - 1,
+    #         utf16_length(symbol.name),
+    #         symbol.symbol_type
+    #     )
 
     
     tokens = tree[1]
@@ -835,15 +835,56 @@ def span_to_range(span: SourceSpan) -> types.Range:
 def code_action(params: types.CodeActionParams) -> list[types.CodeAction]:
     actions: list[types.CodeAction] = []
     uri = params.text_document.uri
+    document = server.workspace.get_text_document(uri)
 
     for diagnostic in params.context.diagnostics:
         match diagnostic.code:
+            case CompilerErrorCodes.NOTHING_RETURN:
+                if diagnostic.data is None:
+                    continue
+
+                assembler_state = assembler_snapshots.get(uri)
+                if assembler_state is None:
+                    continue
+
+                proc_info = assembler_state.procedures.get(diagnostic.data["name"])
+
+                if proc_info is None:
+                    continue
+
+                if proc_info.last_location is None:
+                    continue
+
+                location = proc_info.last_location
+                location_range = span_to_range(location)
+                line_text = document.lines[location_range.start.line]
+                indent = line_text[:len(line_text) - len(line_text.lstrip())]
+
+                edit = types.TextEdit(
+                    range=types.Range(
+                        start=types.Position(location_range.end.line + 1, 0),
+                        end=types.Position(location_range.end.line + 1, 0)
+                    ),
+                    new_text = f"{indent}return\n"
+                )
+
+                actions.append(
+                    types.CodeAction(
+                        title="Add return statement",
+                        kind=types.CodeActionKind.QuickFix,
+                        diagnostics=[diagnostic],
+                        edit=types.WorkspaceEdit(
+                            changes={
+                                uri: [edit]
+                            }
+                        )
+                    )
+                )
             case CompilerErrorCodes.UNDEFINED_VARIABLE:
                 if diagnostic.data is None:
                     continue
 
                 assembler_state = assembler_snapshots.get(uri)
-                document = server.workspace.get_text_document(uri)
                 line = 1
                 if assembler_state is not None:
                     line = len(document.lines)
