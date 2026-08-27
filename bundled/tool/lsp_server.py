@@ -18,6 +18,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 # from pygls.workspace.text_document import TextDocument, RE_START_WORD, RE_END_WORD
+from pygls.uris import to_fs_path
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types
 from itchy.shared_templates import DATA_TO_VARIABLE_TYPE, SourceSpan
@@ -215,7 +216,7 @@ class Autocomplete():
             if ":" in var_data.name:
                 continue
 
-            if var_data.context != scope:
+            if var_data.context.function_context != scope:
                 continue
 
             if is_list is not None and var_data.is_list != is_list:
@@ -714,7 +715,7 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
         return
 
     argument_count = len(function_data[0].argument_types)
-    argument_labels = [f"{function_data[0].argument_names[i]}: {function_data[0].argument_types[i].value}" for i in range(argument_count)]
+    argument_labels = [f"{function_data[0].argument_names[i]}: {function_data[0].argument_types[i].value}" for i in range(argument_count - 1)]
     function_label = f"{function_name}({', '.join(argument_labels)})"
 
     return types.SignatureHelp(
@@ -789,7 +790,7 @@ def hover(params: types.HoverParams) -> types.Hover | None:
                 return_type = "nothing"
             signature = f"({proc_type}) {proc_data.name}({", ".join(f"{proc_data.argument_names[i]}: {proc_data.argument_types[i].value}" 
                                                                 for i in 
-                                                                range(len(proc_data.argument_names)))}) -> {return_type}"
+                                                                range(len(proc_data.argument_names) - 1))}) -> {return_type}"
             contents = types.MarkupContent(
                 kind=types.MarkupKind.Markdown,
                 value=f"```itchy\n{signature}\n```"
@@ -842,9 +843,10 @@ def code_action(params: types.CodeActionParams) -> list[types.CodeAction]:
                     continue
 
                 assembler_state = assembler_snapshots.get(uri)
-                line = 0
+                document = server.workspace.get_text_document(uri)
+                line = 1
                 if assembler_state is not None:
-                    line = sys.maxsize
+                    line = len(document.lines)
                     
                     for key, variable in assembler_state.variables.items():
                         if key[1] is not None:
@@ -906,10 +908,19 @@ def lint_document(uri: str):
     """
     Lints a single document. Returns True if the namespace has updated. 
     """
-    log(f"Linting document: {uri}")
     document = server.workspace.get_text_document(uri)
     assembler = Assembler(uri, is_strict=False, compile_with_warnings=True)
     updated_globals = False
+
+    was_in: set[str] = set()
+
+    for key in list(session.variables):
+        var_data = session.variables[key]
+        if not compare_uris(var_data.uri, uri):
+            continue
+        was_in.add(key)
+        del session.variables[key]
+
     try:
         analysis_parser.cancel()
         parsed = analysis_parser.read(document.source)
@@ -922,15 +933,6 @@ def lint_document(uri: str):
 
     variables: dict[tuple[str, str | None], VariableData] = {}
 
-    # existing_snapshot = assembler_snapshots.get(uri)
-
-    # if existing_snapshot is not None:
-    #     for variable, variable_data in existing_snapshot.variables.items():
-    #         if not variable_data.shared:
-    #             continue
-    #         if variable not in assembler.variable_map:
-    #             updated_globals = True
-    #             assembler.mark_variable_for_deletion.add(variable[0])
     
     for key, var_id in assembler.variable_map.items():
         variables[key] = assembler.variables[var_id]
@@ -944,16 +946,6 @@ def lint_document(uri: str):
     )
 
 
-    # temp_deleted_variables: set[str] = set()
-
-
-    for var_name in assembler.mark_variable_for_deletion:
-        if var_name in session.variables:
-            # temp_deleted_variables.add(var_name)
-            updated_globals = True
-            del session.variables[var_name]
-
-
     for message in assembler.mark_message_for_deletion:
         if message in session.messages:
             del session.messages[message]
@@ -963,14 +955,20 @@ def lint_document(uri: str):
         if not var_data.shared:
             continue
 
-        if var_data.name in assembler.mark_variable_for_deletion:
+        if not compare_uris(var_data.uri, uri):
             continue
+
+        if var_data.name not in was_in:
+            # variable was added
+            updated_globals = True
+        else:
+            was_in.remove(var_data.name)
 
         session.variables[var_data.name] = var_data
 
-
-    log(str([i for i in session.variables]))
-
+    if len(was_in) > 0:
+        # variable was deleted
+        updated_globals = True
 
     for message, message_id in assembler.messages.items():
         session.messages[message] = message_id
@@ -1043,16 +1041,27 @@ def lint_document(uri: str):
 
 # linting_documents: set[str] = set()
 
+def compare_uris(a: str, b: str):
+    path_a = to_fs_path(a)
+    path_b = to_fs_path(b)
+
+    if not path_a or not path_b:
+        raise ValueError("Invalid URI path supplied")
+
+    return path_a.casefold() == path_b.casefold()
+
 
 def lint_documents_with_changes(uri: str):
     """
     Lints a single document, but will update other documents if the globals have changed.
     """
+    log(f"Linting: {uri}")
     globals_changed = lint_document(uri)
     if globals_changed:
         for other_uri in server.workspace.text_documents:
-            if other_uri == uri:
+            if compare_uris(other_uri, uri):
                 continue
+            log(f"Updating: {other_uri}")
             lint_document(other_uri)
 
 
@@ -1188,7 +1197,6 @@ def rename(params: types.RenameParams) -> types.WorkspaceEdit | types.ResponseEr
         if uri != current_uri and ignore_other_uris:
             continue
         edits[uri] = replace_symbol(uri, symbol, symbol.name, params.new_name)
-        # lint_document(uri)
         lint_documents_with_changes(current_uri)
 
     return types.WorkspaceEdit(
