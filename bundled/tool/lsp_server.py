@@ -62,6 +62,7 @@ class CurrentFunction():
 
 @dataclass(frozen=True)
 class AssemblerState():
+    uri: str # is the uri that's used to access files. DIFFERENT to the key of what this is stored in
     symbols: list[SymbolOccurence]
     variables: dict[tuple[str, str | None], VariableData]
     procedures: dict[str, ProcedureInfo]
@@ -950,7 +951,7 @@ def lint_document(uri: str):
     Lints a single document. Returns True if the namespace has updated. 
     """
     document = server.workspace.get_text_document(uri)
-    assembler = Assembler(uri_to_fs(uri), is_strict=False, compile_with_warnings=True)
+    assembler = Assembler(uri, is_strict=False, compile_with_warnings=True)
     updated_globals = False
 
     was_in: set[str] = set()
@@ -979,6 +980,7 @@ def lint_document(uri: str):
 
     
     assembler_snapshots[uri_to_fs(uri)] = AssemblerState(
+        uri=uri,
         symbols=assembler.symbols,
         variables=variables,
         procedures=assembler.procedures,
@@ -1124,9 +1126,9 @@ def did_delete_files(params: types.DeleteFilesParams):
     session.variables.clear()
 
     for file in params.files:
-        uri = file.uri
-        if uri in assembler_snapshots:
-            del assembler_snapshots[uri]
+        fs_path = uri_to_fs(file.uri)
+        if fs_path in assembler_snapshots:
+            del assembler_snapshots[fs_path]
 
 
 @server.feature(types.TEXT_DOCUMENT_DID_CLOSE)
@@ -1178,7 +1180,7 @@ def goto_definition(params: types.DefinitionParams) -> types.Location | None:
     location = symbol.definition_location
 
     if location is None:
-        for other_uri, state in assembler_snapshots.items():
+        for _, state in assembler_snapshots.items():
             key = (symbol.name, None)
             
             variable = state.variables.get(key)
@@ -1186,7 +1188,7 @@ def goto_definition(params: types.DefinitionParams) -> types.Location | None:
                 continue
 
             if variable.definition_location is not None:
-                uri = other_uri
+                uri = state.uri
                 location = variable.definition_location
                 break
 
@@ -1246,10 +1248,10 @@ def rename(params: types.RenameParams) -> types.WorkspaceEdit | types.ResponseEr
             ignore_other_uris = False
 
 
-    for uri in assembler_snapshots:
-        if not compare_uris(uri, current_uri) and ignore_other_uris:
+    for fs_path in assembler_snapshots:
+        if not compare_uris(fs_path, current_uri) and ignore_other_uris:
             continue
-        edits[uri] = replace_symbol(uri, symbol, symbol.name, params.new_name)
+        edits[fs_path] = replace_symbol(fs_path, symbol, symbol.name, params.new_name)
         lint_documents_with_changes(current_uri)
 
     return types.WorkspaceEdit(
