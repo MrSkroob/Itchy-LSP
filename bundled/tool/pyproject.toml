@@ -1,0 +1,7 @@
+[project]
+name = "itchy-lsp"
+version = "0.6.0"
+requires-python = ">=3.10"
+dependencies = [
+    "itchy>=0.3.1,<0.3.3",
+]
