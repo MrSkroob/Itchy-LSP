@@ -193,7 +193,7 @@ def remove_completion_prefix(lines: Sequence[str], position: types.Position) -> 
 
 class Autocomplete():
     def __init__(self, document_uri: str):
-        self.uri = document_uri
+        self.fs_path = uri_to_fs(document_uri)
 
 
     def get_defined_events(self, prefix: str):
@@ -205,7 +205,7 @@ class Autocomplete():
     def get_defined_variables(self, prefix: str, scope: str | None, is_list: bool | None=None):
         variables: list[types.CompletionItem] = []
 
-        assembler_snapshot = assembler_snapshots.get(self.uri)
+        assembler_snapshot = assembler_snapshots.get(self.fs_path)
         if assembler_snapshot is None:
             return variables
 
@@ -249,7 +249,7 @@ class Autocomplete():
 
             available_functions.append(types.CompletionItem(label=opcode, kind=types.CompletionItemKind.Function))
 
-        assembler_snapshot = assembler_snapshots.get(self.uri)
+        assembler_snapshot = assembler_snapshots.get(self.fs_path)
         if assembler_snapshot is None:
             return available_functions
 
@@ -275,7 +275,7 @@ class Autocomplete():
     def get_messages(self, prefix: str):
         messages: list[types.CompletionItem] = []
         
-        assembler_snapshot = assembler_snapshots.get(self.uri)
+        assembler_snapshot = assembler_snapshots.get(self.fs_path)
         if assembler_snapshot is None:
             return messages
 
@@ -321,7 +321,7 @@ class Autocomplete():
         expected_type: VariableTypes | None = None
 
         if current_function is not None:
-            assembler_state = assembler_snapshots.get(self.uri)
+            assembler_state = assembler_snapshots.get(self.fs_path)
 
             if assembler_state is not None:
                 func_name = current_function.name
@@ -685,7 +685,7 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
     document = server.workspace.get_text_document(params.text_document.uri)
     prefix, source = remove_completion_prefix(document.lines, params.position)
 
-    assembler_snapshot = assembler_snapshots.get(params.text_document.uri)
+    assembler_snapshot = assembler_snapshots.get(uri_to_fs(params.text_document.uri))
     if assembler_snapshot is None:
         return None
 
@@ -764,7 +764,7 @@ def hover(params: types.HoverParams) -> types.Hover | None:
     uri = params.text_document.uri
 
 
-    assembler_state = assembler_snapshots.get(uri)
+    assembler_state = assembler_snapshots.get(uri_to_fs(uri))
     if assembler_state is None:
         return
 
@@ -843,7 +843,7 @@ def code_action(params: types.CodeActionParams) -> list[types.CodeAction]:
                 if diagnostic.data is None:
                     continue
 
-                assembler_state = assembler_snapshots.get(uri)
+                assembler_state = assembler_snapshots.get(uri_to_fs(uri))
                 if assembler_state is None:
                     continue
 
@@ -884,7 +884,7 @@ def code_action(params: types.CodeActionParams) -> list[types.CodeAction]:
                 if diagnostic.data is None:
                     continue
 
-                assembler_state = assembler_snapshots.get(uri)
+                assembler_state = assembler_snapshots.get(uri_to_fs(uri))
                 line = 1
                 if assembler_state is not None:
                     line = len(document.lines)
@@ -950,7 +950,7 @@ def lint_document(uri: str):
     Lints a single document. Returns True if the namespace has updated. 
     """
     document = server.workspace.get_text_document(uri)
-    assembler = Assembler(uri, is_strict=False, compile_with_warnings=True)
+    assembler = Assembler(uri_to_fs(uri), is_strict=False, compile_with_warnings=True)
     updated_globals = False
 
     was_in: set[str] = set()
@@ -978,7 +978,7 @@ def lint_document(uri: str):
         variables[key] = assembler.variables[var_id]
 
     
-    assembler_snapshots[uri] = AssemblerState(
+    assembler_snapshots[uri_to_fs(uri)] = AssemblerState(
         symbols=assembler.symbols,
         variables=variables,
         procedures=assembler.procedures,
@@ -1081,14 +1081,27 @@ def lint_document(uri: str):
 
 # linting_documents: set[str] = set()
 
+def uri_to_fs(uri: str):
+    """
+    Returns a filesystem path that's consistent no matter what URI you feed into it.
+    If the URI is already an fs path, it will return the fs path.
+    """
+    path = to_fs_path(uri)
+
+    if path is None:
+        return uri.casefold()
+
+    return path.casefold()
+
+
 def compare_uris(a: str, b: str):
-    path_a = to_fs_path(a)
-    path_b = to_fs_path(b)
+    """
+    Compares both uris/fs by using `uri_to_fs` on both
+    """
+    path_a = uri_to_fs(a)
+    path_b = uri_to_fs(b)
 
-    if not path_a or not path_b:
-        raise ValueError("Invalid URI path supplied")
-
-    return path_a.casefold() == path_b.casefold()
+    return path_a == path_b
 
 
 def lint_documents_with_changes(uri: str):
@@ -1154,14 +1167,14 @@ async def linter(params: types.DidChangeTextDocumentParams):
 @server.feature(types.TEXT_DOCUMENT_DEFINITION)
 def goto_definition(params: types.DefinitionParams) -> types.Location | None:
     uri = params.text_document.uri
-    assembler_state = assembler_snapshots.get(params.text_document.uri)
+    assembler_state = assembler_snapshots.get(uri_to_fs(params.text_document.uri))
     if assembler_state is None:
         return
 
     symbol = symbol_at_position(assembler_state.symbols, params.position)
     if symbol is None:
         return
-
+    
     location = symbol.definition_location
 
     if location is None:
@@ -1187,7 +1200,7 @@ def goto_definition(params: types.DefinitionParams) -> types.Location | None:
 
 
 def replace_symbol(uri: str, symbol: SymbolOccurence, original: str, replace_with: str) -> list[types.TextEdit]:
-    assembler_state = assembler_snapshots.get(uri)
+    assembler_state = assembler_snapshots.get(uri_to_fs(uri))
     if assembler_state is None:
         return []
 
@@ -1212,7 +1225,7 @@ def replace_symbol(uri: str, symbol: SymbolOccurence, original: str, replace_wit
 @server.feature(types.TEXT_DOCUMENT_RENAME)
 def rename(params: types.RenameParams) -> types.WorkspaceEdit | types.ResponseError | None:
     current_uri = params.text_document.uri
-    assembler_state = assembler_snapshots.get(current_uri)
+    assembler_state = assembler_snapshots.get(uri_to_fs(current_uri))
     if assembler_state is None:
         return types.ResponseError(code=ResponseErrorCodes.FILE_NOT_READY.value, message="File not finished linting. Please try again later.")
     
@@ -1234,7 +1247,7 @@ def rename(params: types.RenameParams) -> types.WorkspaceEdit | types.ResponseEr
 
 
     for uri in assembler_snapshots:
-        if uri != current_uri and ignore_other_uris:
+        if not compare_uris(uri, current_uri) and ignore_other_uris:
             continue
         edits[uri] = replace_symbol(uri, symbol, symbol.name, params.new_name)
         lint_documents_with_changes(current_uri)
