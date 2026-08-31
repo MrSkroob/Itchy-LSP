@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import * as vscode from 'vscode';
+import * as commands from './common/commands';
 import { LanguageClient } from 'vscode-languageclient/node';
 import { registerLogger, traceError, traceLog, traceVerbose } from './common/log/logging';
 import {
@@ -100,6 +101,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         registerCommand(`${serverId}.restart`, async () => {
             await runServer();
         }),
+        registerCommand(`${serverId}.createScratchProject`, commands.createScratchProject),
+        registerCommand(`${serverId}.addSprite`, commands.addSprite),
     );
 
     setImmediate(async () => {

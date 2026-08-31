@@ -161,6 +161,16 @@
                 "title": "Restart Server",
                 "category": "Itchy LSP",
                 "command": "Itchy LSP.restart"
+            },
+            {
+                "command": "Itchy LSP.createScratchProject",
+                "title": "Create Scratch Project",
+                "category": "Itchy LSP"
+            },
+            {
+                "command": "Itchy LSP.addSprite",
+                "title": "Add Sprite",
+                "category": "Itchy LSP"
             }
         ]
     },
