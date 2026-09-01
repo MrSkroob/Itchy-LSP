@@ -91,18 +91,9 @@
                 },
                 "Itchy LSP.output": {
                     "default": "",
-                    "description": "Sets the `.sb3` filepath for your project to compile to.",
+                    "description": "If the filepath is an `.sb3` file, the code of the project will be overriden. If the path is a directory, the .sb3 file will be created here.",
                     "scope": "resource",
                     "type": "string"
-                },
-                "Itchy LSP.args": {
-                    "default": [],
-                    "description": "Arguments passed in. Each argument is a separate item in the array.",
-                    "items": {
-                        "type": "string"
-                    },
-                    "scope": "resource",
-                    "type": "array"
                 },
                 "Itchy LSP.path": {
                     "default": [],
@@ -171,8 +162,38 @@
                 "command": "Itchy LSP.addSprite",
                 "title": "Add Sprite",
                 "category": "Itchy LSP"
+            },
+            {
+                "command": "Itchy LSP.compileProject",
+                "title": "%runItchyProject%",
+                "category": "Itchy LSP",
+                "icon": "$(play)"
+            },
+            {
+                "command": "Itchy LSP.compileFile",
+                "title": "%runItchyFile%",
+                "category": "Itchy LSP",
+                "icon": "$(play)"
+            },
+            {
+                "command": "Itchy LSP.compile",
+                "title": "Compile"
             }
-        ]
+        ],
+        "menus": {
+            "editor/title/run": [
+                {
+                    "command": "Itchy LSP.compileFile",
+                    "group": "Itchy LSP", 
+                    "when": "editorLangId == itchy"
+                },
+                {
+                    "command": "Itchy LSP.compileProject",
+                    "group": "Itchy LSP",
+                    "when": "editorLangId == itchy"
+                }
+            ]
+        }
     },
     "dependencies": {
         "@vscode/python-environments": "^1.0.0",

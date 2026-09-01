@@ -103,6 +103,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }),
         registerCommand(`${serverId}.createScratchProject`, commands.createScratchProject),
         registerCommand(`${serverId}.addSprite`, commands.addSprite),
+        registerCommand(`${serverId}.compile`, commands.compile),
+        registerCommand(`${serverId}.compileFile`, () => commands.compileFile(context)),
+        registerCommand(`${serverId}.compileProject`, () => commands.compileProject(context)),
     );
 
     setImmediate(async () => {
