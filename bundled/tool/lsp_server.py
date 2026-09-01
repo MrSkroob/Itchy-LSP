@@ -716,7 +716,10 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
         return
 
     argument_count = len(function_data[0].argument_types)
-    argument_labels = [f"{function_data[0].argument_names[i]}: {function_data[0].argument_types[i].value}" for i in range(argument_count - 1)]
+    offset = 0
+    if function_data[1] == "function":
+        offset = 1
+    argument_labels = [f"{function_data[0].argument_names[i]}: {function_data[0].argument_types[i].value}" for i in range(argument_count - offset)]
     function_label = f"{function_name}({', '.join(argument_labels)})"
 
     return types.SignatureHelp(
@@ -789,9 +792,14 @@ def hover(params: types.HoverParams) -> types.Hover | None:
                 return_type = " | ".join([i.value for i in proc_data.return_types])
             else:
                 return_type = "nothing"
+
+            offset = 0
+            if proc_type == "function":
+                offset = 1
+
             signature = f"({proc_type}) {proc_data.name}({", ".join(f"{proc_data.argument_names[i]}: {proc_data.argument_types[i].value}" 
                                                                 for i in 
-                                                                range(len(proc_data.argument_names) - 1))}) -> {return_type}"
+                                                                range(len(proc_data.argument_names) - offset))}) -> {return_type}"
             contents = types.MarkupContent(
                 kind=types.MarkupKind.Markdown,
                 value=f"```itchy\n{signature}\n```"
