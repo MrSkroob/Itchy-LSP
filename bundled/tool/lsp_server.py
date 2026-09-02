@@ -971,6 +971,12 @@ def lint_document(uri: str):
         was_in.add(key)
         del session.variables[key]
 
+    for key in list(session.messages):
+        message_data = session.messages[key]
+        if not compare_uris(message_data.uri, uri):
+            continue
+        del session.messages[key]
+
     try:
         analysis_parser.cancel()
         parsed = analysis_parser.read(document.source)
@@ -996,9 +1002,9 @@ def lint_document(uri: str):
     )
 
 
-    for message in assembler.mark_message_for_deletion:
-        if message in session.messages:
-            del session.messages[message]
+    for key in assembler.mark_message_for_deletion:
+        if key in session.messages:
+            del session.messages[key]
 
 
     for _, var_data in assembler.variables.items():
@@ -1020,8 +1026,8 @@ def lint_document(uri: str):
         # variable was deleted
         updated_globals = True
 
-    for message, message_id in assembler.messages.items():
-        session.messages[message] = message_id
+    for key, message_id in assembler.messages.items():
+        session.messages[key] = message_id
 
 
     linting_errors = assembler.errors
@@ -1038,11 +1044,11 @@ def lint_document(uri: str):
             continue
         seen.add((error.pos, -1))
         token = error.tokens[min(len(error.tokens) - 1, error.pos)]
-        message = get_message(error, analysis_parser.expected)
+        key = get_message(error, analysis_parser.expected)
         diagnostics.append(
             types.Diagnostic(
                 range=span_to_range(token.span),
-                message=message,
+                message=key,
                 severity=types.DiagnosticSeverity.Error,
                 data={
                     "token": token
@@ -1222,6 +1228,10 @@ def replace_symbol(uri: str, symbol: SymbolOccurence, original: str, replace_wit
 
         if other_symbol.name != original:
             continue
+
+        if symbol.symbol_type == SymbolType.PARAMETER:
+            if symbol.context != other_symbol.context:
+                continue
         
         if symbol.symbol_type == other_symbol.symbol_type:
             edits.append(types.TextEdit(
