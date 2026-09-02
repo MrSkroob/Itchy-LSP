@@ -35,10 +35,10 @@ completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
 semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
-completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary})
-func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary})
+completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
+func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 
-analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
+analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail={"primary": make_dummy_primary})
 analysis_ast = ASTBuilder()
 # analysis_assembler = Assembler(is_strict=False)
 
@@ -93,6 +93,7 @@ KEYWORD_MAP: dict[str, set[str]] = {
     Definitions.Shared.name: {"shared"},
     Definitions.Event.name: {"event"},
     Definitions.While.name: {"while"},
+    Definitions.Bool.name: {"true", "false"},
     Definitions.Else.name: {"else"},
     Definitions.Warp.name: {"warp"},
     Definitions.For.name: {"for"},
@@ -963,6 +964,7 @@ def lint_document(uri: str):
     updated_globals = False
 
     was_in: set[str] = set()
+    was_in_message: set[str] = set()
 
     for key in list(session.variables):
         var_data = session.variables[key]
@@ -975,6 +977,7 @@ def lint_document(uri: str):
         message_data = session.messages[key]
         if not compare_uris(message_data.uri, uri):
             continue
+        was_in_message.add(key)
         del session.messages[key]
 
     try:
@@ -988,24 +991,32 @@ def lint_document(uri: str):
             return updated_globals
 
     variables: dict[tuple[str, str | None], VariableData] = {}
+    messages: dict[str, MessageData] = {}
     
     for key, var_id in assembler.variable_map.items():
         variables[key] = assembler.variables[var_id]
 
+    for key, message_data in assembler.messages.items():
+        messages[key] = message_data
     
     assembler_snapshots[uri_to_fs(uri)] = AssemblerState(
         uri=uri,
         symbols=assembler.symbols,
         variables=variables,
         procedures=assembler.procedures,
-        messages=assembler.messages
+        messages=messages
     )
 
+    for _, message_data in assembler.messages.items():
+        if not compare_uris(message_data.uri, uri):
+            continue
 
-    for key in assembler.mark_message_for_deletion:
-        if key in session.messages:
-            del session.messages[key]
+        if message_data.name not in was_in_message:
+            updated_globals = True
+        else:
+            was_in_message.remove(message_data.name)
 
+        session.messages[message_data.name] = message_data
 
     for _, var_data in assembler.variables.items():
         if not var_data.shared:
@@ -1022,12 +1033,9 @@ def lint_document(uri: str):
 
         session.variables[var_data.name] = var_data
 
-    if len(was_in) > 0:
+    if len(was_in) > 0 or len(was_in_message) > 0:
         # variable was deleted
         updated_globals = True
-
-    for key, message_id in assembler.messages.items():
-        session.messages[key] = message_id
 
 
     linting_errors = assembler.errors
