@@ -16,18 +16,18 @@ import logging
 import re
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import Iterable, Sequence
+from typing import Iterable, Sequence, Callable, TypeVar
 # from pygls.workspace.text_document import TextDocument, RE_START_WORD, RE_END_WORD
 from pygls.uris import to_fs_path
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types
 from itchy.shared_templates import DATA_TO_VARIABLE_TYPE, SourceSpan
 from itchy.scratch_blocks import SCRATCH_BLOCKS, Event, Reporter, Field, ReturnType, Menu
-from itchy.itch_ast import build_ast_with_semantic_tokens, utf16_length, ASTBuilder, SemanticToken
+from itchy.itch_ast import Expr, build_ast_with_semantic_tokens, utf16_length, ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, VariableTypes, ProcedureInfo, VariableData, MessageData, CompilerErrorCodes, SymbolOccurence, SymbolType
-from itchy.dummy_nodes import make_dummy_primary, ANALYSIS_STRATEGIES, find_last_node, find_token, make_wrap
+from itchy.dummy_nodes import make_dummy_primary, ANALYSIS_STRATEGIES, find_nodes, find_last_node, find_token, make_wrap
 from itchy.errors import get_message, CompilerError, CompilerWarning
 
 
@@ -43,6 +43,8 @@ analysis_ast = ASTBuilder()
 # analysis_assembler = Assembler(is_strict=False)
 
 server = LanguageServer("example-server", "v0.1")
+
+T = TypeVar("T")
 # assembler = Assembler(is_strict=False)
 
 
@@ -430,8 +432,9 @@ def log(message: str):
     trigger_characters=["(", ","]
 ))
 def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
-    document = server.workspace.get_text_document(params.text_document.uri)
-    autocomplete = Autocomplete(params.text_document.uri)
+    uri = params.text_document.uri
+    document = server.workspace.get_text_document(uri)
+    autocomplete = Autocomplete(uri)
     prefix, source = remove_completion_prefix(document.lines, params.position)
 
     parsed = None
@@ -443,10 +446,10 @@ def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
     except (ParseError, InterruptedError) as e:
         if isinstance(e, InterruptedError):
             return []
-        current_function = get_editing_parameter(completions_parser, completion_ast)
+        current_function = get_editing_parameter(completions_parser, completion_ast, uri)
 
     expected = completions_parser.expected_items
-    return autocomplete.completion_items_for_expected(expected, prefix, current_function, completion_ast.function_scope)
+    return autocomplete.completion_items_for_expected(expected, prefix.strip(), current_function, completion_ast.function_scope)
 
 
 TOKEN_TYPES = {
@@ -626,7 +629,98 @@ def get_function_name(parser: Parser, ast_builder: ASTBuilder):
 
     return function_name
 
-def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder):
+
+def get_incomplete_node(root_node: ParsedNode, 
+                        node_name: str, 
+                        statement_seperator: Definitions, 
+                        uri: str, 
+                        ast_builder: ASTBuilder,
+                        incomplete_node_data: Callable[[ASTBuilder, ParsedNode, str], tuple[T, bool] | None]) -> T | None:
+    """
+    Returns the last incomplete node (if any)
+    """
+    nodes = find_nodes(root_node, node_name)
+    log("Finding nodes:")
+    iterations = 0
+    while len(nodes) > 0:
+        iterations += 1
+        node = nodes.pop()
+        # log(node.name)
+        if node.dummy_node:
+            continue
+
+
+        found_token = find_token(node, statement_seperator)
+        non_complete_node = incomplete_node_data(ast_builder, node, uri)
+        if non_complete_node is None:
+            continue
+        if (not found_token or found_token[0].dummy_token
+                            or non_complete_node[1]):
+            log(f"found node after {iterations} iterations")
+            return non_complete_node[0]
+
+    log(f"nothing found :(. tried {iterations} times.")
+    return None
+
+
+# def is_functionexpr_node_incomplete()
+
+
+def count_args(args: tuple[Expr, ...]):
+    count = 0
+    for arg in args:
+        if arg.dummy:
+            continue
+        count += 1
+    return count
+
+
+def is_functioncall_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, uri: str) -> tuple[FunctionCallStmt, bool] | None:
+    assembler_snapshot = assembler_snapshots.get(uri_to_fs(uri))
+    if assembler_snapshot is None:
+        return None
+
+    try:
+        tree = ast_builder.build_functioncall(node)
+        current_args = count_args(tree.args)
+        func_data = get_function_info_by_name(assembler_snapshot, tree.callee)
+        if func_data is None:
+            return None
+        if current_args < len(func_data[0].argument_names):
+            return tree, True
+        return tree, False
+    except ValueError:
+        return None
+
+
+def is_eventstat_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, uri: str) -> tuple[EventHandlerStmt, bool] | None:
+    assembler_snapshot = assembler_snapshots.get(uri_to_fs(uri))
+    if assembler_snapshot is None:
+        return None
+    
+    wrap_node = ParsedNode(
+        "wrap",
+        children=make_wrap()
+    )
+    new_children = node.children + (wrap_node, )
+    new_node = ParsedNode(
+        node.name,
+        new_children
+    )
+    try:
+        tree = ast_builder.build_eventstat(new_node)
+        current_args = count_args(tree.params)
+        event_data = get_function_info_by_name(assembler_snapshot, tree.name)
+        if event_data is None:
+            return None
+        if current_args < len(event_data[0].argument_names):
+            return tree, True
+        return tree, False
+    except ValueError:
+        return None
+
+
+def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder, uri: str):
     function_name = None
     active_parameter = None
     parsed = parser.deepest_partial
@@ -634,46 +728,35 @@ def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder):
     if parsed is not None:
         assert isinstance(parsed.tree, ParsedNode)
         try:
-            if (node := find_last_node(parsed.tree, "functioncall")) is not None:
-                tree = ast_builder.build_functioncall(node)
-                function_name = tree.callee
-                active_parameter = len(tree.args)
+            if (node := get_incomplete_node(parsed.tree,
+                                            "functioncall",
+                                            Definitions.CloseBracket,
+                                            uri,
+                                            ast_builder,
+                                            is_functioncall_node_incomplete)):
+                function_name = node.callee
+                active_parameter = len(node.args)
+            elif (node := get_incomplete_node(parsed.tree, 
+                                              "eventstat", 
+                                              Definitions.CloseBracket,
+                                              uri,
+                                              ast_builder,
+                                              is_eventstat_node_incomplete
+                                              )) is not None:
 
-                if found_token := find_token(node, Definitions.CloseBracket):
-                    if not found_token.dummy_token:
-                        return None
-                
-            elif (node := find_last_node(parsed.tree, "eventstat")) is not None:
+                function_name = node.name
+                active_parameter = len(node.params)
 
-                wrap_node = ParsedNode(
-                    "wrap",
-                    children=make_wrap()
-                )
-                new_children = node.children + (wrap_node, )
-                new_node = ParsedNode(
-                    node.name,
-                    new_children
-                )
-
-                tree = ast_builder.build_eventstat(new_node)
-
-                function_name = tree.name
-                active_parameter = len(tree.params)
-
-                # tells us to stop typehinting at the end of the function
-                if found_token := find_token(node, Definitions.CloseBracket):
-                    if not found_token.dummy_token:
-                        return None
 
         except ValueError:
             pass
 
 
     if not function_name:
-        return None
+        return
 
     if not active_parameter:
-        return None
+        return
 
     return CurrentFunction(function_name, active_parameter)
 
@@ -684,17 +767,18 @@ def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder):
                     retrigger_characters=(",")
                 ))
 def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | None:
-    document = server.workspace.get_text_document(params.text_document.uri)
-    prefix, source = remove_completion_prefix(document.lines, params.position)
+    uri = params.text_document.uri
+    document = server.workspace.get_text_document(uri)
+    _, source = remove_completion_prefix(document.lines, params.position)
 
-    assembler_snapshot = assembler_snapshots.get(uri_to_fs(params.text_document.uri))
+    assembler_snapshot = assembler_snapshots.get(uri_to_fs(uri))
     if assembler_snapshot is None:
         return None
 
     parsed: ParseResult | None = None
     current_function = None
     try:
-        parsed = func_signature_parser.read(source + prefix)
+        parsed = func_signature_parser.read(source)
         func_signature_ast.build(parsed.tree)
 
         # if func_signature_ast.called_function is not None:
@@ -702,7 +786,7 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
         #     active_parameter = len(func_signature_ast.called_function.args)
 
     except ParseError:
-        current_function = get_editing_parameter(func_signature_parser, func_signature_ast)
+        current_function = get_editing_parameter(func_signature_parser, func_signature_ast, uri)
 
 
     if current_function is None:
@@ -946,7 +1030,6 @@ def code_action(params: types.CodeActionParams) -> list[types.CodeAction]:
                                 uri: [edit],
                             }
                         ),
-                        is_preferred=True
                     )
                 )
             case _:
