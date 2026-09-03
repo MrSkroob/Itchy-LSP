@@ -16,8 +16,101 @@ import { restartServer } from './common/server';
 import { checkIfConfigurationChanged, getInterpreterFromSetting } from './common/settings';
 import { loadServerDefaults } from './common/setup';
 import { LS_SERVER_RESTART_DELAY } from './common/constants';
-import { getLSClientTraceLevel } from './common/utilities';
+import { getLSClientTraceLevel, getTargetFiles } from './common/utilities';
 import { createOutputChannel, onDidChangeConfiguration, registerCommand } from './common/vscodeapi';
+import { watch } from 'fs';
+
+
+interface TargetFiles {
+    uri: string;
+    costumes: String[];
+    sounds: String[]
+}
+
+
+async function getTargets(): Promise<vscode.Uri[]> {
+    const targets: vscode.Uri[] = [];
+    const editor = vscode.window.activeTextEditor;
+
+    if (!editor) {
+        return targets;
+    }
+
+    const fileUri = editor.document.uri;
+
+    if (!fileUri) {
+        return targets;
+    }
+
+    const workspaceFolder = commands.resolveVariables(vscode.workspace.getConfiguration('Itchy LSP').get('cwd', '${workspaceFolder}'), fileUri)
+    const folderUri = vscode.Uri.file(workspaceFolder);
+    const entries = await vscode.workspace.fs.readDirectory(folderUri);
+
+    for (const [name, type] of entries) {
+        if (type !== vscode.FileType.Directory) {
+            continue;
+        }
+
+        const targetUri = vscode.Uri.joinPath(folderUri, name);
+
+        try {
+            const targetEntries = await vscode.workspace.fs.readDirectory(targetUri);
+            const directories = new Set(
+                targetEntries
+                    .filter(([, type]) => type === vscode.FileType.Directory)
+                    .map(([name]) => name)
+            );
+
+            if (directories.has('costumes') && directories.has('sounds')) {
+                targets.push(targetUri);
+            }
+        } catch {
+            // ignore
+        }
+    }
+
+    return targets
+}
+
+
+async function  sendInitialTargetFiles(client: LanguageClient | undefined): Promise<void> {
+    if (!client) {
+        return;
+    }
+    
+    const targetUris = await getTargets();
+
+    const targets: TargetFiles[] =  await Promise.all(
+        targetUris.map(async (targetUri) => {
+            const [costumes, sounds] = await getTargetFiles(targetUri);
+
+            return {
+                uri: targetUri.toString(),
+                costumes: costumes,
+                sounds: sounds
+            }
+        })
+    )
+
+    await client.sendNotification('itchy/targetFiles', {
+        targets
+    });
+}
+
+async function sendTargetFilesChanged(client: LanguageClient, targetUri: vscode.Uri): Promise<void> {
+    try {
+        const [costumes, sounds] = await getTargetFiles(targetUri);
+
+        await client.sendNotification('itchy/targetFilesChanged', {
+            uri: targetUri.toString(),
+            costumes,
+            sounds
+        })
+    } catch {
+
+    }
+}
+
 
 let lsClient: LanguageClient | undefined;
 let isRestarting = false;
@@ -52,6 +145,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     traceLog(`Module: ${serverInfo.module}`);
     traceVerbose(`Full Server Info: ${JSON.stringify(serverInfo)}`);
 
+    const restartAndSyncServer = async () => {
+        lsClient = await restartServer(
+            serverId,
+            serverName,
+            outputChannel,
+            lsClient,
+        );
+
+        await sendInitialTargetFiles(lsClient);
+    };
+
     const runServer = async () => {
         if (isRestarting) {
             if (restartTimer) {
@@ -66,7 +170,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             if (interpreter && interpreter.length > 0) {
                 if (checkVersion(await resolveInterpreter(interpreter))) {
                     traceVerbose(`Using interpreter from ${serverInfo.module}.interpreter: ${interpreter.join(' ')}`);
-                    lsClient = await restartServer(serverId, serverName, outputChannel, lsClient);
+                    await restartAndSyncServer();
                 }
                 return;
             }
@@ -74,7 +178,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const interpreterDetails = await getInterpreterDetails();
             if (interpreterDetails.path) {
                 traceVerbose(`Using interpreter from Python extension: ${interpreterDetails.path.join(' ')}`);
-                lsClient = await restartServer(serverId, serverName, outputChannel, lsClient);
+                await restartAndSyncServer();
                 return;
             }
 
@@ -88,6 +192,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             isRestarting = false;
         }
     };
+
+    // file watchers
+    for (const workspaceFolder of vscode.workspace.workspaceFolders ?? []) {
+        const watcher = vscode.workspace.createFileSystemWatcher(
+            new vscode.RelativePattern(
+                workspaceFolder,
+                '**/{costumes,sounds}/*'
+            )
+        );
+
+        const updateTarget = async (fileUri: vscode.Uri) => {
+            if (!lsClient) {
+                return;
+            }
+
+            const targetUri = vscode.Uri.joinPath(fileUri, '..', '..');
+            await sendTargetFilesChanged(lsClient, targetUri);
+        }
+
+        context.subscriptions.push(
+            watcher,
+            watcher.onDidCreate(updateTarget),
+            watcher.onDidDelete(updateTarget)
+        )
+    }
 
     context.subscriptions.push(
         onDidChangePythonInterpreter(async () => {

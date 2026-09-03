@@ -3,7 +3,7 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { LogLevel, Uri, WorkspaceFolder } from 'vscode';
+import { LogLevel, Uri, WorkspaceFolder, workspace, FileType } from 'vscode';
 import { Trace } from 'vscode-jsonrpc/node';
 import { getWorkspaceFolders } from './vscodeapi';
 
@@ -64,4 +64,19 @@ export async function getProjectRoot(): Promise<WorkspaceFolder> {
         }
         return rootWorkspace;
     }
+}
+
+async function getFiles(directoryUri: Uri): Promise<String[]> {
+    const entries = await workspace.fs.readDirectory(directoryUri);
+
+    return entries
+        .filter(([, type]) => type === FileType.File)
+        .map(([name]) => name);
+}
+
+export async function getTargetFiles(spriteUri: Uri): Promise<String[][]> {
+    return await Promise.all([
+        getFiles(Uri.joinPath(spriteUri, 'costumes')),
+        getFiles(Uri.joinPath(spriteUri, 'sounds'))
+    ])
 }

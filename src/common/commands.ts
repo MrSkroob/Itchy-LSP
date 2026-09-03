@@ -16,7 +16,6 @@ async function createTarget(projectUri: vscode.Uri, targetName: string) {
     const targetUri = vscode.Uri.joinPath(projectUri, targetName);
 
     await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(targetUri, 'costumes'));
-
     await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(targetUri, 'sounds'));
 
     await vscode.workspace.fs.writeFile(
@@ -124,12 +123,21 @@ export async function addSprite() {
     }
 }
 
-function resolvePath(value: string, uri: vscode.Uri): string {
-    const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath ?? '';
+export function resolveVariables(value: string, uri: vscode.Uri): string {
+    const workspaceFolder = uri
+        ? vscode.workspace.getWorkspaceFolder(uri)
+        : vscode.workspace.workspaceFolders?.[0];
 
-    const fileDirname = path.dirname(uri.fsPath);
-
-    return value.replace(/\$\{workspaceFolder\}/g, workspaceFolder).replace(/\${fileDirname\}/g, fileDirname);
+    return value
+        .replace(/\$\{workspaceFolder\}/g, workspaceFolder?.uri.fsPath ?? '')
+        .replace(/\$\{file\}/g, uri?.fsPath ?? '')
+        .replace(/\$\{fileDirname\}/g, uri ? path.dirname(uri.fsPath) : '')
+        .replace(/\$\{fileBasename\}/g, uri ? path.basename(uri.fsPath) : '')
+        .replace(
+            /\$\{fileBasenameNoExtension\}/g,
+            uri ? path.basename(uri.fsPath, path.extname(uri.fsPath)) : '',
+        )
+        .replace(/\$\{fileExtname\}/g, uri ? path.extname(uri.fsPath) : '');
 }
 
 async function runCompileCommand(context: vscode.ExtensionContext, path: string) {
@@ -145,31 +153,46 @@ async function runCompileCommand(context: vscode.ExtensionContext, path: string)
     }
 
     const compilerPath = vscode.Uri.joinPath(context.extensionUri, 'bundled', 'libs').fsPath;
-    const child = spawn(pythonPath[0], ['-m', 'itchy', path, outputPath], { cwd: compilerPath });
 
-    child.stdout.on('data', (data) => {
-        console.log('[itchy]', data.toString());
-    });
+    const writeEmitter = new vscode.EventEmitter<string>();
+    const closeEmitter = new vscode.EventEmitter<number>();
 
-    child.stderr.on('data', (data) => {
-        console.error('[itchy]', data.toString());
-    });
+    const pty: vscode.Pseudoterminal = {
+        onDidWrite: writeEmitter.event,
+        onDidClose: closeEmitter.event,
 
-    child.on('error', (error) => {
-        console.error('[itchy]', error);
+        open: () => {
+            const child = spawn(pythonPath[0], ['-m', 'itchy', path, outputPath], { cwd: compilerPath });
+            child.stdout.on('data', (data) => {
+                writeEmitter.fire(data.toString());
+            });
 
-        vscode.window.showErrorMessage(`Failed to start Itchy: ${error.message}`);
-    });
+            child.stderr.on('data', (data) => {
+                writeEmitter.fire(data.toString());
+            });
 
-    child.on('close', (code) => {
-        console.log(`[itchy] exited with code ${code}`);
+            child.on('error', (error) => {
+                writeEmitter.fire(`Failed to start Itchy: ${error.message}`);
+            });
 
-        if (code === 0) {
-            vscode.window.showInformationMessage('Itchy compilation finished.');
-        } else {
-            vscode.window.showErrorMessage(`Itchy exited with code ${code}.`);
-        }
-    });
+            child.on('close', (code) => {
+                if (code === 0) {
+                    vscode.window.showInformationMessage('Itchy compilation finished.');
+                } else {
+                    vscode.window.showErrorMessage(`Itchy exited with code ${code}.`);
+                }
+            });
+        },
+
+        close: () => {},
+    };
+
+    const terminal = vscode.window.createTerminal({
+        name: 'Itchy',
+        pty
+    })
+
+    terminal.show()
 }
 
 export async function compile() {
@@ -220,7 +243,7 @@ export async function compileProject(context: vscode.ExtensionContext) {
     // const filepath = resolvePath('${workspaceFolder}', uri);
 
     // await vscode.window.showInformationMessage(filepath);
-    const cwd = resolvePath(vscode.workspace.getConfiguration('Itchy LSP').get('cwd', '${workspaceFolder}'), uri);
+    const cwd = resolveVariables(vscode.workspace.getConfiguration('Itchy LSP').get('cwd', '${workspaceFolder}'), uri);
     // await vscode.window.showInformationMessage(cwd);
     runCompileCommand(context, cwd);
 }

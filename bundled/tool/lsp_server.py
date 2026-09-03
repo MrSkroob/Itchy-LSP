@@ -15,14 +15,14 @@ import asyncio
 import logging
 import re
 from enum import Enum
-from dataclasses import dataclass, field
-from typing import Iterable, Sequence, Callable, TypeVar
+from dataclasses import dataclass, field, replace
+from typing import Iterable, Sequence, Callable, TypeVar, Protocol
 # from pygls.workspace.text_document import TextDocument, RE_START_WORD, RE_END_WORD
 from pygls.uris import to_fs_path
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types
 from itchy.shared_templates import DATA_TO_VARIABLE_TYPE, SourceSpan
-from itchy.scratch_blocks import SCRATCH_BLOCKS, Event, Reporter, Field, ReturnType, Menu
+from itchy.scratch_blocks import SCRATCH_BLOCKS, STAGE_BLOCKS, Event, Reporter, Field, ReturnType, Menu
 from itchy.itch_ast import Expr, build_ast_with_semantic_tokens, utf16_length, ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
@@ -70,15 +70,22 @@ class AssemblerState():
     procedures: dict[str, ProcedureInfo]
     messages: dict[str, MessageData]
 
+
+@dataclass
+class TargetFiles:
+    sprite_name: str
+    costumes: list[str]
+    sounds: list[str]
+
+
 @dataclass()
 class Session():
     variables: dict[str, VariableData] = field(default_factory=dict[str, VariableData]) 
     messages: dict[str, MessageData] = field(default_factory=dict[str, MessageData])
 
 session = Session()
-assembler_snapshots: dict[str, AssemblerState] = {
-
-}
+file_cache: dict[str, TargetFiles] = {}
+assembler_snapshots: dict[str, AssemblerState] = {}
 
 
 def clamp(a: int, upper_bound: int, lower_bound: int):
@@ -115,6 +122,15 @@ TYPE_COMPLETION = [
     types.CompletionItem(label=i.value, kind=types.CompletionItemKind.TypeParameter)
     for i in VariableTypes
 ]
+
+
+def get_block_pool(uri: str):
+    path = Path(uri_to_fs(uri))
+    target = path.stem.casefold()
+    if target == "stage":
+        return STAGE_BLOCKS
+    else:
+        return SCRATCH_BLOCKS
 
 
 def get_function_info_by_name(assembler_snapshot: AssemblerState, name: str) -> tuple[ProcedureInfo, str] | None:
@@ -197,14 +213,43 @@ def remove_completion_prefix(lines: Sequence[str], position: types.Position) -> 
 
 class Autocomplete():
     def __init__(self, document_uri: str):
+        self.block_pool = get_block_pool(document_uri)
         self.fs_path = uri_to_fs(document_uri)
+        log(f"AUTOCOMPLETE PATH: {self.fs_path}")
 
+    def get_defined_sprites(self, prefix: str):
+        return [types.CompletionItem(label=f'"{key.sprite_name}"', kind=types.CompletionItemKind.Text)
+                for key in file_cache.values()
+                if key.sprite_name.startswith(prefix)]
+
+    def get_defined_costumes(self, prefix: str):
+        return [types.CompletionItem(label=f'"{key}"', kind=types.CompletionItemKind.Text)
+                for key in file_cache.get(self.fs_path, TargetFiles("", [], [])).costumes
+                if key.startswith(prefix)]
+
+    def get_defined_sounds(self, prefix: str):
+        return [types.CompletionItem(label=f'"{key}"', kind=types.CompletionItemKind.Text)
+                for key in file_cache.get(self.fs_path, TargetFiles("", [], [])).sounds
+                if key.startswith(prefix)]
 
     def get_defined_events(self, prefix: str):
         return [types.CompletionItem(label=key, kind=types.CompletionItemKind.Function) 
-                for key in SCRATCH_BLOCKS 
-                if key.startswith(prefix) and isinstance(SCRATCH_BLOCKS[key], Event)]
+                for key in self.block_pool 
+                if key.startswith(prefix) and isinstance(self.block_pool[key], Event)]
 
+    def get_all_private_variables(self, prefix: str):
+        variables: list[types.CompletionItem] = []
+        for assembler in assembler_snapshots.values():
+            for variable in assembler.variables.values():
+                if variable.shared:
+                    continue
+                if not variable.name.startswith(prefix):
+                    continue
+
+                variables.append(
+                    types.CompletionItem(label=f'"{variable.name}"', kind=types.CompletionItemKind.Text)
+                )
+        return variables
 
     def get_defined_variables(self, prefix: str, scope: str | None, is_list: bool | None=None):
         variables: list[types.CompletionItem] = []
@@ -232,15 +277,14 @@ class Autocomplete():
 
         return variables
 
-
     def get_defined_functions(self, prefix: str, expected_type: VariableTypes | None=None):
         available_functions: list[types.CompletionItem] = []
 
-        for opcode in SCRATCH_BLOCKS:
+        for opcode in self.block_pool:
             if not opcode.startswith(prefix):
                 continue
 
-            block = SCRATCH_BLOCKS[opcode]
+            block = self.block_pool[opcode]
 
             if isinstance(block, Event):
                 continue
@@ -330,7 +374,7 @@ class Autocomplete():
             if assembler_state is not None:
                 func_name = current_function.name
 
-                if scratch_block := SCRATCH_BLOCKS.get(func_name):
+                if scratch_block := self.block_pool.get(func_name):
                     parameters = scratch_block.inputs + scratch_block.fields
 
                     if len(parameters) > 0:
@@ -356,6 +400,17 @@ class Autocomplete():
                             case "BROADCAST_INPUT" | "BROADCAST_OPTION":
                                 items.extend(self.get_messages(prefix))
                                 expected_type = VariableTypes.STRING
+                            case "BACKDROP" | "COSTUME":
+                                items.extend(self.get_defined_costumes(prefix))
+                                expected_type = VariableTypes.STRING
+                            case "SOUND_MENU":
+                                items.extend(self.get_defined_sounds(prefix))
+                                expected_type = VariableTypes.STRING
+                            case "OBJECT": 
+                                items.extend(self.get_defined_sprites(prefix))
+                                expected_type = VariableTypes.STRING
+                            case "PROPERTY":
+                                items.extend(self.get_all_private_variables(prefix))
                             case _:
                                 pass
 
@@ -640,12 +695,10 @@ def get_incomplete_node(root_node: ParsedNode,
     Returns the last incomplete node (if any)
     """
     nodes = find_nodes(root_node, node_name)
-    log("Finding nodes:")
     iterations = 0
     while len(nodes) > 0:
         iterations += 1
         node = nodes.pop()
-        # log(node.name)
         if node.dummy_node:
             continue
 
@@ -656,10 +709,8 @@ def get_incomplete_node(root_node: ParsedNode,
             continue
         if (not found_token or found_token[0].dummy_token
                             or non_complete_node[1]):
-            log(f"found node after {iterations} iterations")
             return non_complete_node[0]
 
-    log(f"nothing found :(. tried {iterations} times.")
     return None
 
 
@@ -1188,7 +1239,7 @@ def lint_document(uri: str):
 
 # linting_documents: set[str] = set()
 
-def uri_to_fs(uri: str):
+def uri_to_fs(uri: str, keep_case: bool=False):
     """
     Returns a filesystem path that's consistent no matter what URI you feed into it.
     If the URI is already an fs path, it will return the fs path.
@@ -1196,9 +1247,9 @@ def uri_to_fs(uri: str):
     path = to_fs_path(uri)
 
     if path is None:
-        return uri.casefold()
+        return uri.casefold() if not keep_case else uri
 
-    return path.casefold()
+    return path.casefold() if not keep_case else path
 
 
 def compare_uris(a: str, b: str):
@@ -1215,13 +1266,11 @@ def lint_documents_with_changes(uri: str):
     """
     Lints a single document, but will update other documents if the globals have changed.
     """
-    log(f"Linting: {uri}")
     globals_changed = lint_document(uri)
     if globals_changed:
         for other_uri in server.workspace.text_documents:
             if compare_uris(other_uri, uri):
                 continue
-            log(f"Updating: {other_uri}")
             lint_document(other_uri)
 
 
@@ -1365,6 +1414,154 @@ def rename(params: types.RenameParams) -> types.WorkspaceEdit | types.ResponseEr
 
     return types.WorkspaceEdit(
         changes=edits
+    )
+
+
+class TargetFilesParams(Protocol):
+    uri: str
+    costumes: list[str]
+    sounds: list[str]
+
+
+class TargetFilesCacheParams(Protocol):
+    targets: list[TargetFilesParams]
+
+
+def update_file_cache(params: TargetFilesParams):
+    target_fs_path = to_fs_path(params.uri)
+    if target_fs_path is None:
+        return
+
+    target_path = Path(target_fs_path)
+    document_path = target_path / f"{target_path.name}.itch"
+    file_cache[str(document_path).casefold()] = TargetFiles(
+        sprite_name=target_path.name,
+        costumes=params.costumes,
+        sounds=params.sounds
+    )
+
+
+@server.feature("itchy/targetFiles")
+def receive_target_files(params: TargetFilesCacheParams):
+    file_cache.clear()
+
+    for target in params.targets:
+        update_file_cache(target)
+
+
+@server.feature("itchy/targetFilesChanged")
+def receive_target_files_changed(params: TargetFilesParams):
+    update_file_cache(params)
+
+
+@server.feature(types.WORKSPACE_DID_RENAME_FILES)
+def renamed_files(params: types.RenameFilesParams):
+    for file in params.files:
+        old_uri = file.old_uri
+        fs_compatible_path = uri_to_fs(old_uri)
+
+        path = Path(fs_compatible_path)
+        if path.suffix != ".itch":
+            continue
+
+        new_uri = file.new_uri
+
+        for variable in list(session.variables.values()):
+            if compare_uris(variable.uri, old_uri):
+                session.variables[variable.name] = replace(
+                    variable,
+                    uri=new_uri
+                )
+
+        for message in list(session.messages.values()):
+            if compare_uris(message.uri, old_uri):
+                session.messages[message.name] = replace(
+                    message,
+                    uri=new_uri
+                )
+
+        if new_uri != old_uri:
+            assembler_snapshots[uri_to_fs(new_uri)] = assembler_snapshots.pop(fs_compatible_path, AssemblerState(new_uri, [], {}, {}, {}))
+
+
+ignored_operations: set[tuple[str, str]] = set()
+
+
+def should_ignore_rename(old_uri: str, new_uri: str) -> bool:
+    rename = (old_uri, new_uri)
+
+    if rename not in ignored_operations:
+        return False
+
+    ignored_operations.remove(rename)
+    return True
+
+
+@server.feature(types.WORKSPACE_WILL_RENAME_FILES,
+                types.FileOperationRegistrationOptions(
+                    filters=[
+                        types.FileOperationFilter(
+                            scheme="file",
+                            pattern=types.FileOperationPattern(
+                                glob="**/*.itch"
+                            )
+                        ),
+                        types.FileOperationFilter(
+                            scheme="file",
+                            pattern=types.FileOperationPattern(
+                                glob="**/*",
+                                matches=types.FileOperationPatternKind.Folder
+                            )
+                        )
+                    ]
+                ))
+def will_rename_files(params: types.RenameFilesParams) -> types.WorkspaceEdit | None:
+    document_changes: list[types.RenameFile] = []
+
+    for file in params.files:
+        old_uri = file.old_uri
+        old_fs_compatible_path = uri_to_fs(old_uri, True)
+        new_fs_compatible_path = uri_to_fs(file.new_uri, True)
+
+        current_file = Path(old_fs_compatible_path)
+        new_file = Path(new_fs_compatible_path)
+
+        if current_file.stem == new_file.stem:
+            continue
+        if should_ignore_rename(old_fs_compatible_path, new_fs_compatible_path):
+            continue
+        ignored_operations.add((old_fs_compatible_path, new_fs_compatible_path))
+
+        if current_file.suffix == ".itch":
+            # renaming file
+            existing_folder = current_file.parent
+            if not existing_folder.exists():
+                continue
+            new_location = existing_folder.parent / new_file.stem
+
+            ignored_operations.add((str(existing_folder), str(new_location)))
+
+            document_changes.append(types.RenameFile(
+                old_uri=existing_folder.as_uri(),
+                new_uri=new_location.as_uri()
+            ))
+        elif current_file.is_dir():
+            # renaming folder
+            existing_file = current_file / (current_file.stem + ".itch")
+            if not existing_file.exists():
+                continue
+
+            new_location = current_file / (new_file.stem + ".itch")
+
+            ignored_operations.add((str(existing_file), str(new_location)))
+
+            document_changes.append(types.RenameFile(
+                old_uri=existing_file.as_uri(),
+                new_uri=new_location.as_uri()
+            ))
+
+    return types.WorkspaceEdit(
+        document_changes = document_changes
     )
 
 
