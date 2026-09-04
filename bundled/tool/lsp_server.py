@@ -1355,8 +1355,8 @@ def goto_definition(params: types.DefinitionParams) -> types.Location | None:
     )
 
 
-def replace_symbol(uri: str, symbol: SymbolOccurence, original: str, replace_with: str) -> list[types.TextEdit]:
-    assembler_state = assembler_snapshots.get(uri_to_fs(uri))
+def replace_symbol(fs_path: str, symbol: SymbolOccurence, original: str, replace_with: str) -> list[types.TextEdit]:
+    assembler_state = assembler_snapshots.get(fs_path)
     if assembler_state is None:
         return []
 
@@ -1383,7 +1383,7 @@ def replace_symbol(uri: str, symbol: SymbolOccurence, original: str, replace_wit
 
 
 @server.feature(types.TEXT_DOCUMENT_RENAME)
-def rename(params: types.RenameParams) -> types.WorkspaceEdit | types.ResponseError | None:
+def rename_symbol(params: types.RenameParams) -> types.WorkspaceEdit | types.ResponseError | None:
     current_uri = params.text_document.uri
     assembler_state = assembler_snapshots.get(uri_to_fs(current_uri))
     if assembler_state is None:
@@ -1406,11 +1406,12 @@ def rename(params: types.RenameParams) -> types.WorkspaceEdit | types.ResponseEr
             ignore_other_uris = False
 
 
-    for fs_path in assembler_snapshots:
+    for fs_path, assembler_state in assembler_snapshots.items():
         if not compare_uris(fs_path, current_uri) and ignore_other_uris:
             continue
-        edits[fs_path] = replace_symbol(fs_path, symbol, symbol.name, params.new_name)
-        lint_documents_with_changes(current_uri)
+        edits[assembler_state.uri] = replace_symbol(fs_path, symbol, symbol.name, params.new_name)
+
+    lint_documents_with_changes(current_uri)
 
     return types.WorkspaceEdit(
         changes=edits
