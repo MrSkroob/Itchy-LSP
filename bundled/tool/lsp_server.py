@@ -443,23 +443,22 @@ class Autocomplete():
                             # return items
                 elif proc_info := assembler_state.procedures.get(func_name):
                     # don't suggest more 
-                    if len(proc_info.argument_names) <= current_function.current_arg:
-                        return items
-                    arg_type = proc_info.argument_types[max(current_function.current_arg - 1, 0)]
-                    match arg_type:
-                        case VariableTypes.BOOL:
-                            items.extend(BOOLEAN_COMPLETION)
-                            expected_type = VariableTypes.BOOL
-                        case VariableTypes.LIST:
-                            items.extend(self.get_defined_variables(prefix, scope, True))
-                        case VariableTypes.NUMBER:
-                            expected_type = VariableTypes.NUMBER
-                        case VariableTypes.STRING:
-                            expected_type = VariableTypes.STRING
-                        case VariableTypes.VAR:
-                            items.extend(self.get_defined_variables(prefix, scope, False))
-                        case _:
-                            pass
+                    if len(proc_info.argument_names) > current_function.current_arg:
+                        arg_type = proc_info.argument_types[max(current_function.current_arg - 1, 0)]
+                        match arg_type:
+                            case VariableTypes.BOOL:
+                                items.extend(BOOLEAN_COMPLETION)
+                                expected_type = VariableTypes.BOOL
+                            case VariableTypes.LIST:
+                                items.extend(self.get_defined_variables(prefix, scope, True))
+                            case VariableTypes.NUMBER:
+                                expected_type = VariableTypes.NUMBER
+                            case VariableTypes.STRING:
+                                expected_type = VariableTypes.STRING
+                            case VariableTypes.VAR:
+                                items.extend(self.get_defined_variables(prefix, scope, False))
+                            case _:
+                                pass
                     # return items
                 else:
                     # builtin keywords
