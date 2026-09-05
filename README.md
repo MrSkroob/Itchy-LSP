@@ -2,6 +2,7 @@
 Currently supports:
 - Intellisense, including for scratch blocks
 - Syntax Highlighting
+- Basic type checking
 - Hover
 - Linting
 - Rename symbols
