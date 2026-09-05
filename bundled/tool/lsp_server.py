@@ -315,7 +315,8 @@ class Autocomplete():
             if expected_type is not None:
                 if not isinstance(block, Reporter):
                     continue
-                if expected_type not in block.return_type:
+
+                if not Assembler.type_check(expected_type, block.return_type):
                     continue
 
             available_functions.append(types.CompletionItem(label=opcode, kind=types.CompletionItemKind.Function))
@@ -333,7 +334,7 @@ class Autocomplete():
                 continue
 
             if expected_type:
-                if expected_type not in assembler_snapshot.procedures[procedure].return_types:
+                if not Assembler.type_check(expected_type, assembler_snapshot.procedures[procedure].return_types):
                     continue
             
             available_functions.append(
@@ -376,6 +377,10 @@ class Autocomplete():
             unique.append(item)
 
         return unique  
+
+    def add_base_suggestions(self, prefix: str):
+        
+        pass
 
     def completion_items_for_expected(
         self, 
@@ -508,6 +513,11 @@ class Autocomplete():
 
             if token_type == Definitions.Type:
                 items.extend(TYPE_COMPLETION)
+
+        if len(items) == 0:
+            items.extend(
+                self.get_defined_functions(prefix)
+            )
 
         return self.remove_duplicates(items)
 
