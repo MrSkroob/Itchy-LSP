@@ -21,9 +21,9 @@ from typing import Iterable, Sequence, Callable, TypeVar, Protocol
 from pygls.uris import to_fs_path
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types
-from itchy.shared_templates import DATA_TO_VARIABLE_TYPE, SourceSpan
+from itchy.shared_templates import DATA_TO_VARIABLE_TYPE, ASTNode, AssetTypes, SourcePosition, SourceSpan
 from itchy.scratch_blocks import SCRATCH_BLOCKS, STAGE_BLOCKS, Event, Reporter, Field, ReturnType, Menu
-from itchy.itch_ast import Expr, build_ast_with_semantic_tokens, utf16_length, ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt
+from itchy.itch_ast import Expr, build_ast_with_semantic_tokens, utf16_length, ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, VariableTypes, ProcedureInfo, VariableData, MessageData, CompilerErrorCodes, SymbolOccurence, SymbolType
@@ -44,6 +44,7 @@ analysis_ast = ASTBuilder()
 
 server = LanguageServer("example-server", "v0.1")
 
+SymbolWithNode = tuple[SymbolOccurence, ASTNode]
 T = TypeVar("T")
 # assembler = Assembler(is_strict=False)
 
@@ -65,7 +66,7 @@ class CurrentFunction():
 @dataclass(frozen=True)
 class AssemblerState():
     uri: str # is the uri that's used to access files. DIFFERENT to the key of what this is stored in
-    symbols: list[SymbolOccurence]
+    symbols: list[tuple[SymbolOccurence, ASTNode]]
     variables: dict[tuple[str, str | None], VariableData]
     procedures: dict[str, ProcedureInfo]
     messages: dict[str, MessageData]
@@ -112,6 +113,12 @@ KEYWORD_MAP: dict[str, set[str]] = {
 }
 
 
+ASSET_COMPLETION = [
+    types.CompletionItem(label="@" + i.value, kind=types.CompletionItemKind.Value)
+    for i in AssetTypes
+]
+
+
 BOOLEAN_COMPLETION = [
     types.CompletionItem(label=i, kind=types.CompletionItemKind.Constant)
     for i in ("true", "false")
@@ -141,6 +148,23 @@ def get_function_info_by_name(assembler_snapshot: AssemblerState, name: str) -> 
         block_data = SCRATCH_BLOCKS.get(name)
 
         if block_data is None:
+            if name[0] == "@":
+                # is a speshul not really function thing
+                function_type = "asset"
+                function_data = ProcedureInfo(
+                    name=name,
+                    prototype_id="",
+                    proccode="",
+                    argument_ids=(),
+                    argument_names=("assetname",),
+                    argument_defaults=(),
+                    argument_types=(VariableTypes.STRING,),
+                    return_types={VariableTypes.STRING},
+                    definition_location=None
+                )
+
+                return function_data, function_type
+
             return None
 
         return_types: set[VariableTypes] = set()
@@ -215,7 +239,6 @@ class Autocomplete():
     def __init__(self, document_uri: str):
         self.block_pool = get_block_pool(document_uri)
         self.fs_path = uri_to_fs(document_uri)
-        log(f"AUTOCOMPLETE PATH: {self.fs_path}")
 
     def get_defined_sprites(self, prefix: str):
         return [types.CompletionItem(label=f'"{key.sprite_name}"', kind=types.CompletionItemKind.Text)
@@ -223,12 +246,12 @@ class Autocomplete():
                 if key.sprite_name.startswith(prefix)]
 
     def get_defined_costumes(self, prefix: str):
-        return [types.CompletionItem(label=f'"{key}"', kind=types.CompletionItemKind.Text)
+        return [types.CompletionItem(label=f'"{Path(key).stem}"', kind=types.CompletionItemKind.Text)
                 for key in file_cache.get(self.fs_path, TargetFiles("", [], [])).costumes
                 if key.startswith(prefix)]
 
     def get_defined_sounds(self, prefix: str):
-        return [types.CompletionItem(label=f'"{key}"', kind=types.CompletionItemKind.Text)
+        return [types.CompletionItem(label=f'"{Path(key).stem}"', kind=types.CompletionItemKind.Text)
                 for key in file_cache.get(self.fs_path, TargetFiles("", [], [])).sounds
                 if key.startswith(prefix)]
 
@@ -319,7 +342,6 @@ class Autocomplete():
 
         return available_functions
 
-
     def get_messages(self, prefix: str):
         messages: list[types.CompletionItem] = []
         
@@ -342,7 +364,6 @@ class Autocomplete():
 
         return messages
 
-
     def remove_duplicates(self, items: list[types.CompletionItem]):
         seen: set[str] = set()
         unique: list[types.CompletionItem] = []
@@ -354,8 +375,7 @@ class Autocomplete():
             seen.add(item.label)
             unique.append(item)
 
-        return unique
-            
+        return unique  
 
     def completion_items_for_expected(
         self, 
@@ -400,12 +420,12 @@ class Autocomplete():
                             case "BROADCAST_INPUT" | "BROADCAST_OPTION":
                                 items.extend(self.get_messages(prefix))
                                 expected_type = VariableTypes.STRING
-                            case "BACKDROP" | "COSTUME":
-                                items.extend(self.get_defined_costumes(prefix))
-                                expected_type = VariableTypes.STRING
-                            case "SOUND_MENU":
-                                items.extend(self.get_defined_sounds(prefix))
-                                expected_type = VariableTypes.STRING
+                            # case "BACKDROP" | "COSTUME":
+                            #     items.extend(self.get_defined_costumes(prefix))
+                            #     expected_type = VariableTypes.STRING
+                            # case "SOUND_MENU":
+                            #     items.extend(self.get_defined_sounds(prefix))
+                            #     expected_type = VariableTypes.STRING
                             case "OBJECT": 
                                 items.extend(self.get_defined_sprites(prefix))
                                 expected_type = VariableTypes.STRING
@@ -436,10 +456,18 @@ class Autocomplete():
                         case _:
                             pass
                     # return items
+                else:
+                    # builtin keywords
+                    match func_name[1:]:
+                        case AssetTypes.SOUND.value:
+                            items.extend(self.get_defined_sounds(prefix))
+                        case AssetTypes.COSTUME.value:
+                            items.extend(self.get_defined_costumes(prefix))
+                        case AssetTypes.SPRITE.value:
+                            items.extend(self.get_defined_sprites(prefix))
+                        case _:
+                            pass
                 
-
-        current_function = None
-
         for expectation in expected:
             token_type = expectation.definition
             path = expectation.path
@@ -454,6 +482,11 @@ class Autocomplete():
                                 kind=types.CompletionItemKind.Keyword,
                             )
                         )
+
+            if token_type == Definitions.String:
+                items.extend(
+                    ASSET_COMPLETION
+                )
 
             if token_type == Definitions.Symbol:
                 if "eventstat" in path:
@@ -631,16 +664,6 @@ def syntax_highlight_document(uri: str):
 
     if tree is None:
         return None
-
-
-    # for symbol in assembler.symbols:
-    #     tree[1][symbol.span] = SemanticToken(
-    #         symbol.span.start.line - 1,
-    #         symbol.span.start.character - 1,
-    #         utf16_length(symbol.name),
-    #         symbol.symbol_type
-    #     )
-
     
     tokens = tree[1]
 
@@ -702,7 +725,6 @@ def get_incomplete_node(root_node: ParsedNode,
         if node.dummy_node:
             continue
 
-
         found_token = find_token(node, statement_seperator)
         non_complete_node = incomplete_node_data(ast_builder, node, uri)
         if non_complete_node is None:
@@ -710,7 +732,6 @@ def get_incomplete_node(root_node: ParsedNode,
         if (not found_token or found_token[0].dummy_token
                             or non_complete_node[1]):
             return non_complete_node[0]
-
     return None
 
 
@@ -724,6 +745,28 @@ def count_args(args: tuple[Expr, ...]):
             continue
         count += 1
     return count
+
+
+def is_asset_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, uri: str) -> tuple[AssetExpr, bool] | None:
+    assembler_snapshot = assembler_snapshots.get(uri_to_fs(uri))
+    if assembler_snapshot is None:
+        return None
+
+    try:
+        tree = ast_builder.build_asset(node)
+        # we're only really checking if the user has filled in anything at all. so empty string will be 0,
+        # and anything in there will give us a number greater than 0.
+        current_args = len(tree.args)
+
+        func_data = get_function_info_by_name(assembler_snapshot, "@" + tree.asset_type)
+        if func_data is None:
+            return None
+
+        if current_args < len(func_data[0].argument_names):
+            return tree, True
+        return tree, False
+    except ValueError:
+        return None
 
 
 def is_functioncall_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, uri: str) -> tuple[FunctionCallStmt, bool] | None:
@@ -779,7 +822,16 @@ def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder, uri: str):
     if parsed is not None:
         assert isinstance(parsed.tree, ParsedNode)
         try:
-            if (node := get_incomplete_node(parsed.tree,
+            if (node := get_incomplete_node(parsed.tree, 
+                                            "asset",
+                                            Definitions.CloseBracket,
+                                            uri,
+                                            ast_builder,
+                                            is_asset_node_incomplete
+                                            )):
+                function_name = "@" + node.asset_type.value
+                active_parameter = len(node.args)
+            elif (node := get_incomplete_node(parsed.tree,
                                             "functioncall",
                                             Definitions.CloseBracket,
                                             uri,
@@ -820,7 +872,7 @@ def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder, uri: str):
 def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | None:
     uri = params.text_document.uri
     document = server.workspace.get_text_document(uri)
-    _, source = remove_completion_prefix(document.lines, params.position)
+    prefix, source = remove_completion_prefix(document.lines, params.position)
 
     assembler_snapshot = assembler_snapshots.get(uri_to_fs(uri))
     if assembler_snapshot is None:
@@ -829,7 +881,7 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
     parsed: ParseResult | None = None
     current_function = None
     try:
-        parsed = func_signature_parser.read(source)
+        parsed = func_signature_parser.read(source + prefix)
         func_signature_ast.build(parsed.tree)
 
         # if func_signature_ast.called_function is not None:
@@ -887,13 +939,13 @@ def position_in_span(
 
 
 def symbol_at_position(
-    symbols: list[SymbolOccurence],
+    symbols: list[SymbolWithNode],
     position: types.Position,
-) -> SymbolOccurence | None:
+) -> SymbolWithNode | None:
     for symbol in symbols:
-        if symbol.span.start.line == -1:
+        if symbol[0].span.start.line == -1:
             continue
-        if position_in_span(position, utf16_length(symbol.name), symbol.span):
+        if position_in_span(position, utf16_length(symbol[0].name), symbol[0].span):
             return symbol
 
     return None
@@ -912,6 +964,8 @@ def hover(params: types.HoverParams) -> types.Hover | None:
 
     if word is None:
         return 
+
+    word = word[0]
 
     contents = f"({word.symbol_type}) {word.name}"
 
@@ -940,6 +994,8 @@ def hover(params: types.HoverParams) -> types.Hover | None:
                 kind=types.MarkupKind.Markdown,
                 value=f"```itchy\n{signature}\n```"
             )
+        case SymbolType.ASSET:
+            pass
         case SymbolType.VARIABLE:
             variable = assembler_state.variables.get((word.name, None))
             if not variable:
@@ -1330,6 +1386,8 @@ def goto_definition(params: types.DefinitionParams) -> types.Location | None:
     symbol = symbol_at_position(assembler_state.symbols, params.position)
     if symbol is None:
         return
+
+    symbol = symbol[0]
     
     location = symbol.definition_location
 
@@ -1355,7 +1413,7 @@ def goto_definition(params: types.DefinitionParams) -> types.Location | None:
     )
 
 
-def replace_symbol(fs_path: str, symbol: SymbolOccurence, original: str, replace_with: str) -> list[types.TextEdit]:
+def replace_symbol(fs_path: str, symbol: SymbolWithNode, original: str, replace_with: str) -> list[types.TextEdit]:
     assembler_state = assembler_snapshots.get(fs_path)
     if assembler_state is None:
         return []
@@ -1363,43 +1421,51 @@ def replace_symbol(fs_path: str, symbol: SymbolOccurence, original: str, replace
     edits: list[types.TextEdit] = []
     
     for other_symbol in assembler_state.symbols:
-        if other_symbol.span.start.line == -1:
+        if other_symbol[0].span.start.line == -1:
             continue
 
-        if other_symbol.name != original:
+        if other_symbol[0].name != original:
             continue
 
-        if symbol.symbol_type == SymbolType.PARAMETER:
-            if symbol.context != other_symbol.context:
+        if symbol[0].symbol_type == SymbolType.PARAMETER:
+            if symbol[0].context != other_symbol[0].context:
                 continue
         
-        if symbol.symbol_type == other_symbol.symbol_type:
+        if symbol[0].symbol_type == other_symbol[0].symbol_type:
+            if symbol[0].symbol_type == SymbolType.ASSET:
+                assert isinstance(symbol[1], AssetExpr)
+                assert isinstance(other_symbol[1], AssetExpr)
+    
+                if symbol[1].asset_type != other_symbol[1].asset_type:
+                    continue
             edits.append(types.TextEdit(
-                range=span_to_range(other_symbol.span),
-                new_text=replace_with
+                range=span_to_range(other_symbol[0].span),
+                new_text=replace_with,
             ))
 
     return edits
 
 
-@server.feature(types.TEXT_DOCUMENT_RENAME)
-def rename_symbol(params: types.RenameParams) -> types.WorkspaceEdit | types.ResponseError | None:
-    current_uri = params.text_document.uri
-    assembler_state = assembler_snapshots.get(uri_to_fs(current_uri))
-    if assembler_state is None:
-        return types.ResponseError(code=ResponseErrorCodes.FILE_NOT_READY.value, message="File not finished linting. Please try again later.")
-    
-    symbol = symbol_at_position(assembler_state.symbols, params.position)
-    if symbol is None:
-        return None
 
+def rename_symbols(symbol: SymbolWithNode, new_name: str, current_uri: str | None, force_local: bool=False):
+    """
+    Attempts to rename all symbols in the provided uri file (if applicable).
+
+    CurrentURI can be a garbage uri if you're not renaming a variable. 
+    """
     edits: dict[str, list[types.TextEdit]] = {}
+    assembler_state = assembler_snapshots.get(uri_to_fs(current_uri)) if current_uri else None
+    
+    ignore_other_uris = assembler_state is not None and not force_local
+    # if no available assembler is found, we assume we replace all files.
 
-    ignore_other_uris = True
-    if symbol.symbol_type == SymbolType.VARIABLE:
-        variable = assembler_state.variables.get((symbol.name, symbol.context))
+    if symbol[0].symbol_type == SymbolType.VARIABLE:
+        if assembler_state is None:
+            return
+        
+        variable = assembler_state.variables.get((symbol[0].name, symbol[0].context))
         if variable is None:
-            return types.ResponseError(code=ResponseErrorCodes.SYMBOL_NOT_FOUND.value, message="Symbol not found.")
+            return
 
         # only replace variable if it's a shared variable
         if variable.shared:
@@ -1407,25 +1473,142 @@ def rename_symbol(params: types.RenameParams) -> types.WorkspaceEdit | types.Res
 
 
     for fs_path, assembler_state in assembler_snapshots.items():
-        if not compare_uris(fs_path, current_uri) and ignore_other_uris:
+        if not compare_uris(fs_path, current_uri or "") and ignore_other_uris:
             continue
-        edits[assembler_state.uri] = replace_symbol(fs_path, symbol, symbol.name, params.new_name)
+        edits[assembler_state.uri] = replace_symbol(fs_path, symbol, symbol[0].name, new_name)
 
-    lint_documents_with_changes(current_uri)
+    if current_uri:
+        lint_documents_with_changes(current_uri)
+    return edits
+
+
+@server.feature(types.TEXT_DOCUMENT_RENAME)
+def document_rename_symbol(params: types.RenameParams) -> types.WorkspaceEdit | None:
+    current_uri = params.text_document.uri
+    assembler_state = assembler_snapshots.get(uri_to_fs(current_uri))
+    if assembler_state is None:
+        return 
+    
+    symbol = symbol_at_position(assembler_state.symbols, params.position)
+    if symbol is None:
+        return None
+
+    edits: dict[str, list[types.TextEdit]] | None = rename_symbols(symbol, params.new_name, current_uri)
+
+    if edits is None:
+        return
 
     return types.WorkspaceEdit(
         changes=edits
     )
 
 
+class RenameParams(Protocol):
+    resourceType: str
+    oldName: str    
+    newName: str
+
+
 class TargetFilesParams(Protocol):
     uri: str
     costumes: list[str]
     sounds: list[str]
+    renames: list[RenameParams] | None
 
 
 class TargetFilesCacheParams(Protocol):
     targets: list[TargetFilesParams]
+
+
+class AssetRenamer():
+    def __init__(self):
+        self.changes: dict[str, list[types.TextEdit]] = {}
+        self.annotation_id = "assetRename"
+
+
+    def add_target_file_operation(self, files_params: TargetFilesParams):
+        if files_params.renames is None:
+            return
+
+        renames = files_params.renames
+
+        for rename in renames:
+            force_local = rename.resourceType == AssetTypes.SOUND.value
+
+            fs_path = uri_to_fs(files_params.uri, True)
+            parent_dir = Path(fs_path)
+            itchy_path = parent_dir / (parent_dir.stem + ".itch")
+
+            self.add_operation(rename.oldName, rename.newName, AssetTypes(rename.resourceType), itchy_path.as_uri(), force_local)
+
+
+    def add_operation(self, old_name: str, new_name: str, asset_type: AssetTypes, uri: str | None=None, force_local: bool=False):
+        symbol = SymbolOccurence(
+            span=SourceSpan(start=SourcePosition(-1, -1), end=SourcePosition(-1, -1)),
+            definition_location=None,
+            context=None,
+            symbol_type=SymbolType.ASSET,
+            name=old_name
+        )
+        ast_node = AssetExpr(
+            asset_type = asset_type,
+            args=(),
+            dummy=True
+        )
+
+        new_changes = rename_symbols((symbol, ast_node), f'"{new_name}"', uri, force_local)
+        if new_changes is not None:
+            for uri, change in new_changes.items():
+                if uri not in self.changes:
+                    self.changes[uri] = []
+                self.changes[uri].extend(change)
+
+
+    def get_qualified_operations(self):
+        converted_changes: list[types.TextDocumentEdit] = []
+        
+        for key, text_edits in self.changes.items():
+            converted_changes.append(
+                types.TextDocumentEdit(
+                    text_document=types.OptionalVersionedTextDocumentIdentifier(
+                        uri=key,
+                        version=None
+                    ),
+                    edits=[
+                    types.AnnotatedTextEdit(
+                        annotation_id=self.annotation_id,
+                        new_text=i.new_text,
+                        range=i.range
+                        ) for i in text_edits
+                    ]
+                )
+                
+            )
+        
+        edits = types.WorkspaceEdit(
+            document_changes=converted_changes,
+            change_annotations={
+                self.annotation_id: types.ChangeAnnotation(
+                    label=f"Change update asset names",
+                    needs_confirmation=True
+                )
+            }
+        )
+        return edits
+
+    def update_sprite_cache(self, old_name: str, new_name: str):
+        for cache in file_cache.values():
+            if cache.sprite_name == old_name:
+                cache.sprite_name = new_name
+
+    async def apply_operations(self):
+        edits = self.get_qualified_operations()
+        await server.workspace_apply_edit_async(
+            types.ApplyWorkspaceEditParams(
+                edits,
+                label="Document reference renaming"
+            )
+        )
 
 
 def update_file_cache(params: TargetFilesParams):
@@ -1444,46 +1627,147 @@ def update_file_cache(params: TargetFilesParams):
 
 @server.feature("itchy/targetFiles")
 def receive_target_files(params: TargetFilesCacheParams):
+    # initial receive
     file_cache.clear()
-
+    
     for target in params.targets:
         update_file_cache(target)
-
+        parent = Path(uri_to_fs(target.uri))
+        script_path = parent / (parent.stem + ".itch")
+        if not script_path.exists():
+            continue
+        syntax_highlight_document(script_path.as_uri())
+        lint_documents_with_changes(script_path.as_uri())
+    
 
 @server.feature("itchy/targetFilesChanged")
-def receive_target_files_changed(params: TargetFilesParams):
+async def receive_target_files_changed(params: TargetFilesParams):
     update_file_cache(params)
+    changes = AssetRenamer()
+    changes.add_target_file_operation(params)
+    await changes.apply_operations()
+    # changes.add_operation(params., new_file.stem, AssetTypes.SPRITE)
+    
 
 
-@server.feature(types.WORKSPACE_DID_RENAME_FILES)
-def renamed_files(params: types.RenameFilesParams):
+
+@server.feature(
+    types.WORKSPACE_DID_RENAME_FILES,
+    types.FileOperationRegistrationOptions(
+            filters=[
+                types.FileOperationFilter(
+                    scheme="file",
+                    pattern=types.FileOperationPattern(
+                        glob="**/*",
+                        matches=types.FileOperationPatternKind.Folder
+                    )
+                ),
+                types.FileOperationFilter(
+                    scheme="file",
+                    pattern=types.FileOperationPattern(
+                        glob="**/*.itch",
+                        matches=types.FileOperationPatternKind.File
+                    )
+                )
+            ]
+        ))
+async def did_rename_files(
+    params: types.RenameFilesParams,
+    ) -> None:    
+    document_changes: list[types.RenameFile] = []
+    changing: list[tuple[str, str]] = []
+    changes = AssetRenamer()
+
+    log("RENAMING!!!!!!!!!!")
+
     for file in params.files:
-        old_uri = file.old_uri
-        fs_compatible_path = uri_to_fs(old_uri)
+        old_fs = uri_to_fs(file.old_uri, True)
+        new_fs = uri_to_fs(file.new_uri, True)
 
-        path = Path(fs_compatible_path)
-        if path.suffix != ".itch":
+        old_file = Path(old_fs)
+        new_file = Path(new_fs)
+
+        if old_file.stem == new_file.stem:
             continue
 
-        new_uri = file.new_uri
+        if should_ignore_rename(old_fs, new_fs):
+            continue
 
+        # We only care about .itch files here.
+        if old_file.suffix != ".itch":
+            continue
+
+        changes.update_sprite_cache(old_file.stem, new_file.stem)
+
+        new_uri = file.new_uri
+        
         for variable in list(session.variables.values()):
-            if compare_uris(variable.uri, old_uri):
+            if compare_uris(variable.uri, file.old_uri):
                 session.variables[variable.name] = replace(
                     variable,
                     uri=new_uri
                 )
 
         for message in list(session.messages.values()):
-            if compare_uris(message.uri, old_uri):
+            if compare_uris(message.uri, file.old_uri):
                 session.messages[message.name] = replace(
                     message,
                     uri=new_uri
                 )
 
-        if new_uri != old_uri:
-            assembler_snapshots[uri_to_fs(new_uri)] = assembler_snapshots.pop(fs_compatible_path, AssemblerState(new_uri, [], {}, {}, {}))
+        if new_uri != file.old_uri:
+            assembler_snapshots[uri_to_fs(new_uri)] = assembler_snapshots.pop(old_fs, AssemblerState(new_uri, [], {}, {}, {}))
+        
 
+        #
+        # Only rename the containing folder when this was the
+        # "main" .itch file for that folder:
+        #
+        # Sprite1/Sprite1.itch
+        #
+        if old_file.parent.stem != old_file.stem:
+            continue
+
+        #
+        # At this point VS Code has already performed:
+        #
+        # Sprite1/Sprite1.itch
+        # ->
+        # Sprite1/Sprite2.itch
+        #
+        # So new_file.parent is still Sprite1/.
+        #
+        existing_folder = new_file.parent
+        new_folder = existing_folder.parent / new_file.stem
+
+        if not existing_folder.exists():
+            continue
+
+        changes.add_operation(old_file.stem, new_file.stem, AssetTypes.SPRITE)
+        changing.append((old_file.stem, new_file.stem))
+
+        ignored_operations.add((
+            str(existing_folder),
+            str(new_folder),
+        ))
+
+        document_changes.append(
+            types.RenameFile(
+                old_uri=existing_folder.as_uri(),
+                new_uri=new_folder.as_uri(),
+            )
+        )
+
+
+    await changes.apply_operations()
+    await server.workspace_apply_edit_async(
+        types.ApplyWorkspaceEditParams(
+            types.WorkspaceEdit(document_changes=document_changes),
+            label="Synchronise Itchy sprite name",
+        )
+    )
+
+        
 
 ignored_operations: set[tuple[str, str]] = set()
 
@@ -1504,65 +1788,82 @@ def should_ignore_rename(old_uri: str, new_uri: str) -> bool:
                         types.FileOperationFilter(
                             scheme="file",
                             pattern=types.FileOperationPattern(
-                                glob="**/*.itch"
+                                glob="**/*",
+                                matches=types.FileOperationPatternKind.Folder
                             )
                         ),
                         types.FileOperationFilter(
                             scheme="file",
                             pattern=types.FileOperationPattern(
-                                glob="**/*",
-                                matches=types.FileOperationPatternKind.Folder
+                                glob="**/*.itch",
+                                matches=types.FileOperationPatternKind.File
                             )
                         )
                     ]
                 ))
-def will_rename_files(params: types.RenameFilesParams) -> types.WorkspaceEdit | None:
+async def will_rename_files(
+    params: types.RenameFilesParams
+) -> types.WorkspaceEdit | None:
+    changes = AssetRenamer()
     document_changes: list[types.RenameFile] = []
 
     for file in params.files:
         old_uri = file.old_uri
-        old_fs_compatible_path = uri_to_fs(old_uri, True)
-        new_fs_compatible_path = uri_to_fs(file.new_uri, True)
+        new_uri = file.new_uri
 
-        current_file = Path(old_fs_compatible_path)
-        new_file = Path(new_fs_compatible_path)
+        old_fs = uri_to_fs(old_uri, True)
+        new_fs = uri_to_fs(new_uri, True)
+
+        current_file = Path(old_fs)
+        new_file = Path(new_fs)
+
+        if current_file.suffix == ".itch":
+            continue
 
         if current_file.stem == new_file.stem:
             continue
-        if should_ignore_rename(old_fs_compatible_path, new_fs_compatible_path):
+
+        if should_ignore_rename(old_fs, new_fs):
             continue
-        ignored_operations.add((old_fs_compatible_path, new_fs_compatible_path))
 
-        if current_file.suffix == ".itch":
-            # renaming file
-            existing_folder = current_file.parent
-            if not existing_folder.exists():
-                continue
-            new_location = existing_folder.parent / new_file.stem
+        if current_file.is_dir():
+            existing_file = current_file / f"{current_file.stem}.itch"
 
-            ignored_operations.add((str(existing_folder), str(new_location)))
-
-            document_changes.append(types.RenameFile(
-                old_uri=existing_folder.as_uri(),
-                new_uri=new_location.as_uri()
-            ))
-        elif current_file.is_dir():
-            # renaming folder
-            existing_file = current_file / (current_file.stem + ".itch")
             if not existing_file.exists():
                 continue
 
-            new_location = current_file / (new_file.stem + ".itch")
+            new_location = current_file / f"{new_file.stem}.itch"
 
-            ignored_operations.add((str(existing_file), str(new_location)))
-
-            document_changes.append(types.RenameFile(
-                old_uri=existing_file.as_uri(),
-                new_uri=new_location.as_uri()
+            ignored_operations.add((
+                str(existing_file),
+                str(new_location),
             ))
 
+            document_changes.append(
+                types.RenameFile(
+                    old_uri=existing_file.as_uri(),
+                    new_uri=new_location.as_uri(),
+                )
+            )
+
+            changes.add_operation(current_file.stem, new_file.stem, AssetTypes.SPRITE)
+        #
+        # Do NOT handle .itch -> folder here.
+        #
+        # The folder must be renamed AFTER VS Code has renamed
+        # the .itch file, so that's handled by didRenameFiles.
+        #
+
+    if not document_changes:
+        return None
+
+    qualified_changes = changes.get_qualified_operations()
+    merged_changes: list[types.RenameFile | types.CreateFile | types.TextDocumentEdit | types.DeleteFile] = list(document_changes)
+    if qualified_changes.document_changes is not None:
+        merged_changes.extend(qualified_changes.document_changes)
+
     return types.WorkspaceEdit(
-        document_changes = document_changes
+        document_changes=merged_changes,
     )
 
 
