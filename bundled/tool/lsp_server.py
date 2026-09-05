@@ -1527,10 +1527,12 @@ class AssetRenamer():
 
 
     def add_target_file_operation(self, files_params: TargetFilesParams):
-        if files_params.renames is None:
-            return
-
+        if getattr(files_params, "renames", None) is None:
+            return 
+        
         renames = files_params.renames
+
+        assert renames is not None
 
         for rename in renames:
             force_local = rename.resourceType == AssetTypes.SOUND.value
