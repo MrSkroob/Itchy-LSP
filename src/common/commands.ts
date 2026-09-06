@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { getInterpreterDetails } from './python';
 import { spawn } from 'child_process';
+import { write } from 'fs';
 
 const sampleSource = `event event_whenflagclicked() {
     looks_say("Hello Itchy!")
@@ -163,6 +164,10 @@ async function runCompileCommand(context: vscode.ExtensionContext, path: string)
 
         open: () => {
             const child = spawn(pythonPath[0], ['-m', 'itchy', path, outputPath], { cwd: compilerPath });
+            child.on('spawn', () => {
+                writeEmitter.fire(`${pythonPath[0]} -m itchy "${path}" "${outputPath}"\r\n`)
+            })
+
             child.stdout.on('data', (data) => {
                 writeEmitter.fire(data.toString());
             });

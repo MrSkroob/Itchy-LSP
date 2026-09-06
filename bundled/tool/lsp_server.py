@@ -27,7 +27,7 @@ from itchy.itch_ast import Expr, build_ast_with_semantic_tokens, utf16_length, A
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, VariableTypes, ProcedureInfo, VariableData, MessageData, CompilerErrorCodes, SymbolOccurence, SymbolType
-from itchy.dummy_nodes import make_dummy_primary, ANALYSIS_STRATEGIES, find_nodes, find_last_node, find_token, make_wrap
+from itchy.dummy_nodes import ANALYSIS_STRATEGIES, find_nodes, find_last_node, find_token, make_wrap
 from itchy.errors import get_message, CompilerError, CompilerWarning
 
 
@@ -38,7 +38,7 @@ semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRAT
 completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 
-analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail={"primary": make_dummy_primary})
+analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 analysis_ast = ASTBuilder()
 # analysis_assembler = Assembler(is_strict=False)
 
