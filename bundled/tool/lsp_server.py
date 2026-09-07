@@ -22,12 +22,12 @@ from pygls.uris import to_fs_path
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types
 from itchy.shared_templates import DATA_TO_VARIABLE_TYPE, ASTNode, AssetTypes, SourcePosition, SourceSpan
-from itchy.scratch_blocks import SCRATCH_BLOCKS, STAGE_BLOCKS, Event, Reporter, Field, ReturnType, Menu
+from itchy.scratch_blocks import SCRATCH_BLOCKS, STAGE_BLOCKS, Block, Event, Reporter, Field, ReturnType, Menu
 from itchy.itch_ast import Expr, build_ast_with_semantic_tokens, utf16_length, ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, VariableTypes, ProcedureInfo, VariableData, MessageData, CompilerErrorCodes, SymbolOccurence, SymbolType
-from itchy.dummy_nodes import ANALYSIS_STRATEGIES, find_nodes, find_last_node, find_token, make_wrap
+from itchy.dummy_nodes import ANALYSIS_STRATEGIES, make_dummy_primary, find_nodes, find_last_node, find_token, make_wrap
 from itchy.errors import get_message, CompilerError, CompilerWarning
 
 
@@ -35,8 +35,8 @@ completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
 semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
-completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
-func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
+completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary})
+func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary})
 
 analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 analysis_ast = ASTBuilder()
@@ -192,8 +192,16 @@ def get_function_info_by_name(assembler_snapshot: AssemblerState, name: str) -> 
                         DATA_TO_VARIABLE_TYPE[i.return_type]
                     )
                 case Field():
+                    variable_type = VariableTypes.STRING
+                    if isinstance(block_data, (Reporter, Block)):
+                        if i.name in block_data.variables: 
+                            if i.name == "LIST":
+                                variable_type = VariableTypes.LIST
+                            elif i.name == "VARIABLE":
+                                variable_type = VariableTypes.VAR
+                        
                     argument_names.append(i.name)
-                    argument_types.append(VariableTypes.STRING)
+                    argument_types.append(variable_type)
 
 
         function_data = ProcedureInfo(
@@ -316,7 +324,7 @@ class Autocomplete():
                 if not isinstance(block, Reporter):
                     continue
 
-                if not Assembler.type_check(expected_type, block.return_type):
+                if not Assembler.static_type_check(expected_type, block.return_type):
                     continue
 
             available_functions.append(types.CompletionItem(label=opcode, kind=types.CompletionItemKind.Function))
@@ -334,7 +342,7 @@ class Autocomplete():
                 continue
 
             if expected_type:
-                if not Assembler.type_check(expected_type, assembler_snapshot.procedures[procedure].return_types):
+                if not Assembler.static_type_check(expected_type, assembler_snapshot.procedures[procedure].return_types):
                     continue
             
             available_functions.append(
@@ -867,7 +875,7 @@ def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder, uri: str):
     if not function_name:
         return
 
-    if not active_parameter:
+    if active_parameter is None:
         return
 
     return CurrentFunction(function_name, active_parameter)
@@ -908,7 +916,6 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
     active_parameter = current_function.current_arg
 
     function_data = get_function_info_by_name(assembler_snapshot, function_name)
-
     if function_data is None:
         return
 
@@ -1660,8 +1667,6 @@ async def receive_target_files_changed(params: TargetFilesParams):
     # changes.add_operation(params., new_file.stem, AssetTypes.SPRITE)
     
 
-
-
 @server.feature(
     types.WORKSPACE_DID_RENAME_FILES,
     types.FileOperationRegistrationOptions(
@@ -1688,8 +1693,6 @@ async def did_rename_files(
     document_changes: list[types.RenameFile] = []
     changing: list[tuple[str, str]] = []
     changes = AssetRenamer()
-
-    log("RENAMING!!!!!!!!!!")
 
     for file in params.files:
         old_fs = uri_to_fs(file.old_uri, True)
