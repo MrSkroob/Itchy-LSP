@@ -103,6 +103,7 @@ KEYWORD_MAP: dict[str, set[str]] = {
     Definitions.Shared.name: {"shared"},
     Definitions.Event.name: {"event"},
     Definitions.While.name: {"while"},
+    Definitions.Forever.name: {"forever"},
     Definitions.Bool.name: {"true", "false"},
     Definitions.Else.name: {"else"},
     Definitions.Warp.name: {"warp"},
