@@ -23,11 +23,11 @@ from pygls.lsp.server import LanguageServer
 from lsprotocol import types
 from itchy.shared_templates import DATA_TO_VARIABLE_TYPE, ASTNode, AssetTypes, SourcePosition, SourceSpan
 from itchy.scratch_blocks import SCRATCH_BLOCKS, STAGE_BLOCKS, Block, Event, Reporter, Field, ReturnType, Menu
-from itchy.itch_ast import build_ast_with_semantic_tokens, utf16_length, ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr
+from itchy.itch_ast import build_ast_with_semantic_tokens, utf16_length, ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr, NumberExpr
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, VariableTypes, ProcedureInfo, VariableData, MessageData, CompilerErrorCodes, SymbolOccurence, SymbolType
-from itchy.dummy_nodes import ANALYSIS_STRATEGIES, find_nodes, find_last_node, find_token, make_wrap
+from itchy.dummy_nodes import ANALYSIS_STRATEGIES, extract_tokens, find_nodes, find_last_node, find_tokens, make_wrap
 from itchy.errors import get_message, CompilerError, CompilerWarning
 
 
@@ -36,17 +36,15 @@ func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
 semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
 completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
-func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
+func_signature_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 
 analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
 analysis_ast = ASTBuilder()
-# analysis_assembler = Assembler(is_strict=False)
 
 server = LanguageServer("example-server", "v0.1")
 
 SymbolWithNode = tuple[SymbolOccurence, ASTNode]
 T = TypeVar("T")
-# assembler = Assembler(is_strict=False)
 
 
 class ResponseErrorCodes(Enum):
@@ -743,11 +741,11 @@ def get_incomplete_node(root_node: ParsedNode,
         if node.dummy_node:
             continue
 
-        found_token = find_token(node, statement_seperator)
+        found_token = find_tokens(node, statement_seperator)
         non_complete_node = incomplete_node_data(ast_builder, node, uri)
         if non_complete_node is None:
             continue
-        if (not found_token or found_token[0].dummy_token
+        if (not found_token or found_token[-1].dummy_token
                             or non_complete_node[1]):
             return non_complete_node[0]
     return None
@@ -784,9 +782,17 @@ def is_functioncall_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, u
         tree = ast_builder.build_functioncall(node)
         current_args = len(tree.args)
         func_data = get_function_info_by_name(assembler_snapshot, tree.callee)
+
+
         if func_data is None:
             return None
         if current_args < len(func_data[0].argument_names):
+            last_token = extract_tokens(node)
+            if last_token and last_token[-1].kind == Definitions.FieldSeperator:
+                tree = FunctionCallStmt(
+                    tree.callee,
+                    tree.args + (NumberExpr(0),)
+                )
             return tree, True
         return tree, False
     except ValueError:
@@ -814,6 +820,13 @@ def is_eventstat_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, uri:
         if event_data is None:
             return None
         if current_args < len(event_data[0].argument_names):
+            last_token = extract_tokens(node)
+            if last_token and last_token[-1].kind == Definitions.FieldSeperator:
+                tree = EventHandlerStmt(
+                    tree.name,
+                    tree.params + (NumberExpr(0),),
+                    body=()
+                )
             return tree, True
         return tree, False
     except ValueError:
