@@ -23,11 +23,11 @@ from pygls.lsp.server import LanguageServer
 from lsprotocol import types
 from itchy.shared_templates import DATA_TO_VARIABLE_TYPE, ASTNode, AssetTypes, SourcePosition, SourceSpan
 from itchy.scratch_blocks import SCRATCH_BLOCKS, STAGE_BLOCKS, Block, Event, Reporter, Field, ReturnType, Menu
-from itchy.itch_ast import Expr, build_ast_with_semantic_tokens, utf16_length, ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr
+from itchy.itch_ast import build_ast_with_semantic_tokens, utf16_length, ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, VariableTypes, ProcedureInfo, VariableData, MessageData, CompilerErrorCodes, SymbolOccurence, SymbolType
-from itchy.dummy_nodes import ANALYSIS_STRATEGIES, make_dummy_primary, find_nodes, find_last_node, find_token, make_wrap
+from itchy.dummy_nodes import ANALYSIS_STRATEGIES, find_nodes, find_last_node, find_token, make_wrap
 from itchy.errors import get_message, CompilerError, CompilerWarning
 
 
@@ -35,8 +35,8 @@ completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
 semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
-completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary})
-func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail={"primary": make_dummy_primary})
+completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
+func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 
 analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 analysis_ast = ASTBuilder()
@@ -753,18 +753,6 @@ def get_incomplete_node(root_node: ParsedNode,
     return None
 
 
-# def is_functionexpr_node_incomplete()
-
-
-def count_args(args: tuple[Expr, ...]):
-    count = 0
-    for arg in args:
-        if arg.dummy:
-            continue
-        count += 1
-    return count
-
-
 def is_asset_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, uri: str) -> tuple[AssetExpr, bool] | None:
     assembler_snapshot = assembler_snapshots.get(uri_to_fs(uri))
     if assembler_snapshot is None:
@@ -794,7 +782,7 @@ def is_functioncall_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, u
 
     try:
         tree = ast_builder.build_functioncall(node)
-        current_args = count_args(tree.args)
+        current_args = len(tree.args)
         func_data = get_function_info_by_name(assembler_snapshot, tree.callee)
         if func_data is None:
             return None
@@ -821,7 +809,7 @@ def is_eventstat_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, uri:
     )
     try:
         tree = ast_builder.build_eventstat(new_node)
-        current_args = count_args(tree.params)
+        current_args = len(tree.params)
         event_data = get_function_info_by_name(assembler_snapshot, tree.name)
         if event_data is None:
             return None
@@ -899,6 +887,7 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
     parsed: ParseResult | None = None
     current_function = None
     try:
+        func_signature_parser.cancel()
         parsed = func_signature_parser.read(source + prefix)
         func_signature_ast.build(parsed.tree)
 
@@ -906,7 +895,9 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
         #     function_name = func_signature_ast.called_function.callee
         #     active_parameter = len(func_signature_ast.called_function.args)
 
-    except ParseError:
+    except (ParseError, InterruptedError) as e:
+        if isinstance(e, InterruptedError):
+            return
         current_function = get_editing_parameter(func_signature_parser, func_signature_ast, uri)
 
 
