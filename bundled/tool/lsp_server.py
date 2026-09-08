@@ -34,11 +34,11 @@ from itchy.errors import get_message, CompilerError, CompilerWarning
 completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
-semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
+semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
 completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 
-analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
+analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
 analysis_ast = ASTBuilder()
 # analysis_assembler = Assembler(is_strict=False)
 
@@ -1157,6 +1157,7 @@ def lint_document(uri: str):
     """
     Lints a single document. Returns True if the namespace has updated. 
     """
+    log(f"LINTING: {uri}")
     document = server.workspace.get_text_document(uri)
     assembler = Assembler(uri, is_strict=False, compile_with_warnings=True)
     updated_globals = False
@@ -1187,6 +1188,8 @@ def lint_document(uri: str):
     except (ParseError, CompilerError, InterruptedError) as e:
         if isinstance(e, InterruptedError):
             return updated_globals
+
+    log(f"BULK WORK COMPLETE: {uri}")
 
     variables: dict[tuple[str, str | None], VariableData] = {}
     messages: dict[str, MessageData] = {}
