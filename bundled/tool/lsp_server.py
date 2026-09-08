@@ -1157,7 +1157,6 @@ def lint_document(uri: str):
     """
     Lints a single document. Returns True if the namespace has updated. 
     """
-    log(f"LINTING: {uri}")
     document = server.workspace.get_text_document(uri)
     assembler = Assembler(uri, is_strict=False, compile_with_warnings=True)
     updated_globals = False
@@ -1188,8 +1187,6 @@ def lint_document(uri: str):
     except (ParseError, CompilerError, InterruptedError) as e:
         if isinstance(e, InterruptedError):
             return updated_globals
-
-    log(f"BULK WORK COMPLETE: {uri}")
 
     variables: dict[tuple[str, str | None], VariableData] = {}
     messages: dict[str, MessageData] = {}
