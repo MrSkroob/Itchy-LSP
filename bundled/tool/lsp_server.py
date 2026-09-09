@@ -34,11 +34,11 @@ from itchy.errors import get_message, CompilerError, CompilerWarning
 completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
-semantic_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
+semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
 completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 
-analysis_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
+analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
 analysis_ast = ASTBuilder()
 
 server = LanguageServer("example-server", "v0.1")
@@ -550,13 +550,6 @@ def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
 
     expected = completions_parser.expected_items
     scope = completion_ast.function_scope
-
-    if completions_parser.recovered_tree and isinstance(completions_parser.recovered_tree, ParsedNode):
-        try:
-            function_scope = completion_ast.build_functionstat(completions_parser.recovered_tree)
-            scope = function_scope.name
-        except ValueError:
-            pass
 
     return autocomplete.completion_items_for_expected(expected, prefix.strip(), current_function, scope)
 
