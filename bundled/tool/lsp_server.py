@@ -34,11 +34,11 @@ from itchy.errors import get_message, CompilerError, CompilerWarning
 completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
-semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
+semantic_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
 completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
-func_signature_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
+func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 
-analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
+analysis_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
 analysis_ast = ASTBuilder()
 
 server = LanguageServer("example-server", "v0.1")
@@ -385,10 +385,6 @@ class Autocomplete():
 
         return unique  
 
-    def add_base_suggestions(self, prefix: str):
-        
-        pass
-
     def completion_items_for_expected(
         self, 
         expected: set[ExpectedToken],
@@ -553,7 +549,16 @@ def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
         current_function = get_editing_parameter(completions_parser, completion_ast, uri)
 
     expected = completions_parser.expected_items
-    return autocomplete.completion_items_for_expected(expected, prefix.strip(), current_function, completion_ast.function_scope)
+    scope = completion_ast.function_scope
+
+    if completions_parser.recovered_tree and isinstance(completions_parser.recovered_tree, ParsedNode):
+        try:
+            function_scope = completion_ast.build_functionstat(completions_parser.recovered_tree)
+            scope = function_scope.name
+        except ValueError:
+            pass
+
+    return autocomplete.completion_items_for_expected(expected, prefix.strip(), current_function, scope)
 
 
 TOKEN_TYPES = {
@@ -1448,21 +1453,24 @@ def replace_symbol(fs_path: str, symbol: SymbolWithNode, original: str, replace_
         if other_symbol[0].name != original:
             continue
 
+        if symbol[0].symbol_type != other_symbol[0].symbol_type:
+            continue
+        
         if symbol[0].symbol_type == SymbolType.PARAMETER:
             if symbol[0].context != other_symbol[0].context:
                 continue
         
-        if symbol[0].symbol_type == other_symbol[0].symbol_type:
-            if symbol[0].symbol_type == SymbolType.ASSET:
-                assert isinstance(symbol[1], AssetExpr)
-                assert isinstance(other_symbol[1], AssetExpr)
-    
-                if symbol[1].asset_type != other_symbol[1].asset_type:
-                    continue
-            edits.append(types.TextEdit(
-                range=span_to_range(other_symbol[0].span),
-                new_text=replace_with,
-            ))
+        if symbol[0].symbol_type == SymbolType.ASSET:
+            assert isinstance(symbol[1], AssetExpr)
+            assert isinstance(other_symbol[1], AssetExpr)
+
+            if symbol[1].asset_type != other_symbol[1].asset_type:
+                continue
+
+        edits.append(types.TextEdit(
+            range=span_to_range(other_symbol[0].span),
+            new_text=replace_with,
+        ))
 
     return edits
 
