@@ -350,16 +350,12 @@ class Autocomplete():
 
         return available_functions
 
-    def get_messages(self, prefix: str):
+    def get_defined_messages(self, prefix: str):
         messages: list[types.CompletionItem] = []
-        
-        assembler_snapshot = assembler_snapshots.get(self.fs_path)
-        if assembler_snapshot is None:
-            return messages
 
         prefix = prefix.strip('"')
 
-        for message in assembler_snapshot.messages:
+        for message in session.messages:
             if not message.startswith(prefix):
                 continue
 
@@ -425,15 +421,6 @@ class Autocomplete():
                                 items.extend(self.get_defined_variables(prefix, scope, True))
                             case "VARIABLE":
                                 items.extend(self.get_defined_variables(prefix, scope, False))
-                            case "BROADCAST_INPUT" | "BROADCAST_OPTION":
-                                items.extend(self.get_messages(prefix))
-                                expected_type = VariableTypes.STRING
-                            # case "BACKDROP" | "COSTUME":
-                            #     items.extend(self.get_defined_costumes(prefix))
-                            #     expected_type = VariableTypes.STRING
-                            # case "SOUND_MENU":
-                            #     items.extend(self.get_defined_sounds(prefix))
-                            #     expected_type = VariableTypes.STRING
                             case "OBJECT": 
                                 items.extend(self.get_defined_sprites(prefix))
                                 expected_type = VariableTypes.STRING
@@ -472,6 +459,8 @@ class Autocomplete():
                             items.extend(self.get_defined_costumes(prefix))
                         case AssetTypes.SPRITE.value:
                             items.extend(self.get_defined_sprites(prefix))
+                        case AssetTypes.MESSAGE.value:
+                            items.extend(self.get_defined_messages(prefix))
                         case _:
                             pass
                 
@@ -656,6 +645,7 @@ def encode_semantic_tokens(
         previous_character = token.character
 
     return data
+
 
 
 def syntax_highlight_document(uri: str):
@@ -1013,6 +1003,9 @@ def hover(params: types.HoverParams) -> types.Hover | None:
                 kind=types.MarkupKind.Markdown,
                 value=f"```itchy\n{signature}\n```"
             )
+        case SymbolType.MESSAGE:
+            # not used
+            pass
         case SymbolType.ASSET:
             pass
         case SymbolType.VARIABLE:
