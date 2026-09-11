@@ -35,7 +35,7 @@ completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
 semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
-completions_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
+completions_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat, wrap"})
 func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 
 analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
@@ -540,6 +540,7 @@ def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
     expected = completions_parser.expected_items
     scope = completion_ast.function_scope
 
+
     return autocomplete.completion_items_for_expected(expected, prefix.strip(), current_function, scope)
 
 
@@ -891,10 +892,6 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
         func_signature_parser.cancel()
         parsed = func_signature_parser.read(source + prefix)
         func_signature_ast.build(parsed.tree)
-
-        # if func_signature_ast.called_function is not None:
-        #     function_name = func_signature_ast.called_function.callee
-        #     active_parameter = len(func_signature_ast.called_function.args)
 
     except (ParseError, InterruptedError) as e:
         if isinstance(e, InterruptedError):
