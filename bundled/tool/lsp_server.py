@@ -14,7 +14,7 @@ if str(BUNDLED_LIBS) not in sys.path:
 import asyncio
 import logging
 import re
-from enum import Enum
+# from enum import Enum
 from dataclasses import dataclass, field, replace
 from typing import Iterable, Sequence, Callable, TypeVar, Protocol
 # from pygls.workspace.text_document import TextDocument, RE_START_WORD, RE_END_WORD
@@ -45,11 +45,6 @@ server = LanguageServer("example-server", "v0.1")
 
 SymbolWithNode = tuple[SymbolOccurence, ASTNode]
 T = TypeVar("T")
-
-
-class ResponseErrorCodes(Enum):
-    FILE_NOT_READY = 1
-    SYMBOL_NOT_FOUND = 2
 
 
 @dataclass(frozen=True)
