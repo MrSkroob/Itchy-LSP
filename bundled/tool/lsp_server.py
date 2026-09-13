@@ -35,7 +35,7 @@ completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
 semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
-completions_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat, wrap"})
+completions_parser = Parser(skip_bad_tokens=False)
 func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 
 analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
