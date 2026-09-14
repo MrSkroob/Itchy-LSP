@@ -9,7 +9,7 @@
         "module": "Itchy LSP"
     },
     "publisher": "MrSkroob",
-    "license": "MIT",
+    "license": "GPL-2.0-only",
     "homepage": "https://github.com/MrSkroob/Itchy-LSP",
     "repository": {
         "type": "git",
