@@ -5,9 +5,11 @@ import { spawn } from 'child_process';
 import { write } from 'fs';
 
 const sampleSource = `event event_whenflagclicked() {
-    looks_say("Hello Itchy!")
+    looks_say("Hello Itchy!");
 }
 `;
+
+const stageSource = `event event_whenflagclicked() {}` 
 
 function testFilename(value: string) {
     return /[<>:"/\\|?*]/.test(value);
@@ -19,10 +21,19 @@ async function createTarget(projectUri: vscode.Uri, targetName: string) {
     await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(targetUri, 'costumes'));
     await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(targetUri, 'sounds'));
 
-    await vscode.workspace.fs.writeFile(
-        vscode.Uri.joinPath(targetUri, `${targetName}.itch`),
-        Buffer.from(sampleSource, 'utf8'),
-    );
+    const path = vscode.Uri.joinPath(targetUri, `${targetName}.itch`);
+
+    if (targetName === "stage") {
+        await vscode.workspace.fs.writeFile(
+            path,
+            Buffer.from(stageSource, 'utf8')
+        );
+    } else {
+        await vscode.workspace.fs.writeFile(
+            path,
+            Buffer.from(sampleSource, 'utf8'),
+        );
+    }
 }
 
 export async function createScratchProject() {
