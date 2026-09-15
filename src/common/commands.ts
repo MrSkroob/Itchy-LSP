@@ -174,9 +174,9 @@ async function runCompileCommand(context: vscode.ExtensionContext, path: string)
         onDidClose: closeEmitter.event,
 
         open: () => {
-            const child = spawn(pythonPath[0], ['-m', 'itchy', path, outputPath], { cwd: compilerPath });
+            const child = spawn(pythonPath[0], ['-m', 'itchy', "--allow-warnings", path, outputPath], { cwd: compilerPath });
             child.on('spawn', () => {
-                writeEmitter.fire(`${pythonPath[0]} -m itchy "${path}" "${outputPath}"\r\n`)
+                writeEmitter.fire(`${pythonPath[0]} -m itchy "--allow-warnings" "${path}" "${outputPath}"\r\n`)
             })
 
             child.stdout.on('data', (data) => {

@@ -1246,7 +1246,7 @@ def lint_document(uri: str):
             continue
         seen.add((error.pos, -1))
         token = error.tokens[min(len(error.tokens) - 1, error.pos)]
-        key = get_message(error, analysis_parser.expected)
+        key = get_message(error, error.expected)
         diagnostics.append(
             types.Diagnostic(
                 range=span_to_range(token.span),
