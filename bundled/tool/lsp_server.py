@@ -1450,6 +1450,14 @@ def replace_symbol(fs_path: str, symbol: SymbolWithNode, original: str, replace_
             new_text=replace_with,
         ))
 
+    edits.sort(
+        key=lambda edit: (
+            edit.range.start.line,
+            edit.range.start.character,
+        ),
+        reverse=True
+    )
+
     return edits
 
 
