@@ -34,11 +34,11 @@ from itchy.errors import get_message, CompilerError, CompilerWarning
 completion_ast = ASTBuilder()
 func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
-semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
+semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
 completions_parser = Parser(skip_bad_tokens=False)
 func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
 
-analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES)
+analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"stat", "wrap"})
 analysis_ast = ASTBuilder()
 
 server = LanguageServer("example-server", "v0.1")
@@ -660,15 +660,6 @@ def syntax_highlight_document(uri: str):
     except (ParseError, CompilerError, InterruptedError) as e:
         if isinstance(e, InterruptedError):
             return types.SemanticTokens(data=[])
-        if semantic_parser.deepest_partial and isinstance(e, ParseError):
-            try:
-                tree = build_ast_with_semantic_tokens(semantic_parser.deepest_partial.tree)
-                
-                # we populate the assembler with shared variables and messages from other documents.
-                assembler.prepare()
-                assembler.emit_program(tree[0])
-            except CompilerError:
-                pass
     
 
     if tree is None:
