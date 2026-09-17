@@ -23,7 +23,7 @@ from pygls.lsp.server import LanguageServer
 from lsprotocol import types
 from itchy.shared_templates import DATA_TO_VARIABLE_TYPE, ASTNode, AssetTypes, SourcePosition, SourceSpan
 from itchy.scratch_blocks import SCRATCH_BLOCKS, STAGE_BLOCKS, Block, Event, Reporter, Field, ReturnType, Menu
-from itchy.itch_ast import build_ast_with_semantic_tokens, utf16_length, ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr, NumberExpr
+from itchy.itch_ast import ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr, NumberExpr
 from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, VariableTypes, ProcedureInfo, VariableData, MessageData, CompilerErrorCodes, SymbolOccurence, SymbolType
@@ -647,12 +647,13 @@ def encode_semantic_tokens(
 def syntax_highlight_document(uri: str):
     document = server.workspace.get_text_document(uri)
     assembler = Assembler(uri, is_strict=False, compile_with_warnings=True)
+    ast_builder = ASTBuilder(is_strict=False)
     tree = None
 
     try:
         semantic_parser.cancel()
         parsed = semantic_parser.read(document.source)
-        tree = build_ast_with_semantic_tokens(parsed.tree)
+        tree = ast_builder.build_with_semantic_tokens(parsed.tree)
 
         # we populate the assembler with shared variables and messages from other documents.
         assembler.prepare()
@@ -946,7 +947,7 @@ def symbol_at_position(
     for symbol in symbols:
         if symbol[0].span.start.line == -1:
             continue
-        if position_in_span(position, utf16_length(symbol[0].name), symbol[0].span):
+        if position_in_span(position, ASTBuilder.utf16_length(symbol[0].name), symbol[0].span):
             return symbol
 
     return None
