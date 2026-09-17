@@ -343,6 +343,12 @@ class Autocomplete():
                 types.CompletionItem(label=procedure, kind=types.CompletionItemKind.Function)
             )
 
+        if expected_type == VariableTypes.STRING:
+            available_functions.extend(
+                types.CompletionItem(label=f"@{i.value}", kind=types.CompletionItemKind.Value)
+                for i in AssetTypes
+            )
+
         return available_functions
 
     def get_defined_messages(self, prefix: str):
