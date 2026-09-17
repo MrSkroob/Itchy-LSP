@@ -183,13 +183,13 @@
         "menus": {
             "editor/title/run": [
                 {
-                    "command": "Itchy LSP.compileFile",
-                    "group": "Itchy LSP", 
+                    "command": "Itchy LSP.compileProject",
+                    "group": "Itchy LSP@1",
                     "when": "editorLangId == itchy"
                 },
                 {
-                    "command": "Itchy LSP.compileProject",
-                    "group": "Itchy LSP",
+                    "command": "Itchy LSP.compileFile",
+                    "group": "Itchy LSP@2", 
                     "when": "editorLangId == itchy"
                 }
             ]
