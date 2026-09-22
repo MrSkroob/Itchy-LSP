@@ -16,30 +16,30 @@ import logging
 import re
 # from enum import Enum
 from dataclasses import dataclass, field, replace
-from typing import Iterable, Sequence, Callable, TypeVar, Protocol
+from typing import Iterable, Sequence, Callable, TypeVar, Protocol, cast
 # from pygls.workspace.text_document import TextDocument, RE_START_WORD, RE_END_WORD
 from pygls.uris import to_fs_path
 from pygls.lsp.server import LanguageServer
 from lsprotocol import types
 from itchy.shared_templates import DATA_TO_VARIABLE_TYPE, ASTNode, AssetTypes, SourcePosition, SourceSpan
 from itchy.scratch_blocks import SCRATCH_BLOCKS, STAGE_BLOCKS, Block, Event, Reporter, Field, ReturnType, Menu
-from itchy.itch_ast import ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr, NumberExpr
-from itchy.parser import Parser, ExpectedToken, ParseError, ParseResult, ParsedNode
+from itchy.itch_ast import ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr, Expr
+from itchy.parserv2 import Parser, ExpectedToken, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, VariableTypes, ProcedureInfo, VariableData, MessageData, CompilerErrorCodes, SymbolOccurence, SymbolType
-from itchy.dummy_nodes import ANALYSIS_STRATEGIES, extract_tokens, find_nodes, find_last_node, find_tokens, make_wrap
+from itchy.dummy_nodes import ANALYSIS_STRATEGIES, find_nodes, find_last_node, find_tokens, make_wrap
 from itchy.errors import get_message, CompilerError, CompilerWarning
 
 
-completion_ast = ASTBuilder()
-func_signature_ast = ASTBuilder()
 # parser that tries not to fail so ast can give syntax highlighting to entire file
-semantic_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"wrap": make_wrap})
-completions_parser = Parser(skip_bad_tokens=False)
-func_signature_parser = Parser(skip_bad_tokens=False, skip_rules_on_fail=ANALYSIS_STRATEGIES)
+semantic_parser = Parser(allow_recovery=True, allow_insertions=True, recovery_nodes=ANALYSIS_STRATEGIES)
+completions_parser = Parser(allow_recovery=False)
+func_signature_parser = Parser()
 
-analysis_parser = Parser(skip_bad_tokens=True, skip_rules_on_fail=ANALYSIS_STRATEGIES, recoverable_rules={"wrap": make_wrap})
-analysis_ast = ASTBuilder()
+analysis_parser = Parser(allow_recovery=True, allow_insertions=True, recovery_nodes=ANALYSIS_STRATEGIES)
+analysis_ast = ASTBuilder(is_strict=False)
+completion_ast = ASTBuilder(is_strict=False)
+func_signature_ast = ASTBuilder(is_strict=False)
 
 server = LanguageServer("example-server", "v0.1")
 
@@ -529,17 +529,24 @@ def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
 
     parsed = None
     current_function = None
+    parsed = completions_parser.read(source)
+    tree = parsed.tree
+    if parsed.failed:
+        tree = parsed.partial_tree
     try:
-        completions_parser.cancel()
-        parsed = completions_parser.read(source)
-        completion_ast.build(parsed.tree)
-    except (ParseError, InterruptedError) as e:
-        if isinstance(e, InterruptedError):
-            return []
-        current_function = get_editing_parameter(completions_parser, completion_ast, uri)
+        completion_ast.build(tree)
+    except ValueError:
+        pass
+    current_function = get_editing_parameter(parsed, completion_ast, uri)
+    scope = None
 
-    expected = completions_parser.expected_items
-    scope = completion_ast.function_scope
+    if parsed.failed:
+        expected = parsed.expected.items
+        if function_def_node := find_last_node(cast(ParsedNode, parsed.partial_tree), "functionstat"):
+            scope = completion_ast.build_functionstat(function_def_node).name
+    else:
+        expected = completions_parser.expected.items
+    # scope = completion_ast.function_scope
 
 
     return autocomplete.completion_items_for_expected(expected, prefix.strip(), current_function, scope)
@@ -656,17 +663,19 @@ def syntax_highlight_document(uri: str):
     ast_builder = ASTBuilder(is_strict=False)
     tree = None
 
+    parsed = semantic_parser.read(document.source)
+    parse_tree = parsed.tree
+    if parsed.failed:
+        parse_tree = parsed.partial_tree
+
     try:
-        semantic_parser.cancel()
-        parsed = semantic_parser.read(document.source)
-        tree = ast_builder.build_with_semantic_tokens(parsed.tree)
+        tree = ast_builder.build_with_semantic_tokens(parse_tree)
 
         # we populate the assembler with shared variables and messages from other documents.
         assembler.prepare()
         assembler.emit_program(tree[0])
-    except (ParseError, CompilerError, InterruptedError) as e:
-        if isinstance(e, InterruptedError):
-            return types.SemanticTokens(data=[])
+    except (ValueError, CompilerError):
+        pass
     
 
     if tree is None:
@@ -681,6 +690,14 @@ def syntax_highlight_document(uri: str):
     )
 
 
+def count_args(args: Iterable[Expr]):
+    count = 0
+    for arg in args:
+        if arg.dummy:
+            continue
+        count += 1
+    return count
+
 
 @server.thread()
 @server.feature(types.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL,
@@ -694,20 +711,19 @@ def semantic_tokens(params: types.SemanticTokensParams) -> types.SemanticTokens 
     return syntax_highlight_document(params.text_document.uri)
 
 
-def get_function_name(parser: Parser, ast_builder: ASTBuilder):
+def get_function_name(result: ParseResult, ast_builder: ASTBuilder):
     function_name = None
-    parsed = parser.deepest_partial
+    parsed = result.partial_tree
 
-    if parsed is not None:
-        assert isinstance(parsed.tree, ParsedNode)
-        try:
-            if (node := find_last_node(parsed.tree, "function")) is not None:
-                tree = ast_builder.build_function(node)
-                function_name = tree.name
+    assert isinstance(parsed, ParsedNode)
+    try:
+        if (node := find_last_node(parsed, "function")) is not None:
+            tree = ast_builder.build_function(node)
+            function_name = tree.name
 
-            
-        except (ValueError, IndexError) as error:
-            log(f"failed to get function info: {str(error)}")
+        
+    except (ValueError, IndexError) as error:
+        log(f"failed to get function info: {str(error)}")
 
     if not function_name:
         return None
@@ -771,19 +787,19 @@ def is_functioncall_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, u
 
     try:
         tree = ast_builder.build_functioncall(node)
-        current_args = len(tree.args)
+        current_args = count_args(tree.args)
         func_data = get_function_info_by_name(assembler_snapshot, tree.callee)
 
 
         if func_data is None:
             return None
         if current_args < len(func_data[0].argument_names):
-            last_token = extract_tokens(node)
-            if last_token and last_token[-1].kind == Definitions.FieldSeperator:
-                tree = FunctionCallStmt(
-                    tree.callee,
-                    tree.args + (NumberExpr(0),)
-                )
+            # last_token = extract_tokens(node)
+            # if last_token and last_token[-1].kind == Definitions.FieldSeperator:
+            #     tree = FunctionCallStmt(
+            #         tree.callee,
+            #         tree.args + (NumberExpr(0),)
+            #     )
             return tree, True
         return tree, False
     except ValueError:
@@ -806,63 +822,55 @@ def is_eventstat_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, uri:
     )
     try:
         tree = ast_builder.build_eventstat(new_node)
-        current_args = len(tree.params)
+        current_args = count_args(tree.params)
         event_data = get_function_info_by_name(assembler_snapshot, tree.name)
         if event_data is None:
             return None
         if current_args < len(event_data[0].argument_names):
-            last_token = extract_tokens(node)
-            if last_token and last_token[-1].kind == Definitions.FieldSeperator:
-                tree = EventHandlerStmt(
-                    tree.name,
-                    tree.params + (NumberExpr(0),),
-                    body=()
-                )
             return tree, True
         return tree, False
     except ValueError:
         return None
 
 
-def get_editing_parameter(parser: Parser, ast_builder: ASTBuilder, uri: str):
+def get_editing_parameter(result: ParseResult, ast_builder: ASTBuilder, uri: str):
     function_name = None
     active_parameter = None
-    parsed = parser.deepest_partial
+    parsed = result.partial_tree
 
-    if parsed is not None:
-        assert isinstance(parsed.tree, ParsedNode)
-        try:
-            if (node := get_incomplete_node(parsed.tree, 
-                                            "asset",
+    assert isinstance(parsed, ParsedNode)
+    try:
+        if (node := get_incomplete_node(parsed, 
+                                        "asset",
+                                        Definitions.CloseBracket,
+                                        uri,
+                                        ast_builder,
+                                        is_asset_node_incomplete
+                                        )):
+            function_name = "@" + node.asset_type.value
+            active_parameter = len(node.args)
+        elif (node := get_incomplete_node(parsed,
+                                        "functioncall",
+                                        Definitions.CloseBracket,
+                                        uri,
+                                        ast_builder,
+                                        is_functioncall_node_incomplete)):
+            function_name = node.callee
+            active_parameter = len(node.args)
+        elif (node := get_incomplete_node(parsed, 
+                                            "eventstat", 
                                             Definitions.CloseBracket,
                                             uri,
                                             ast_builder,
-                                            is_asset_node_incomplete
-                                            )):
-                function_name = "@" + node.asset_type.value
-                active_parameter = len(node.args)
-            elif (node := get_incomplete_node(parsed.tree,
-                                            "functioncall",
-                                            Definitions.CloseBracket,
-                                            uri,
-                                            ast_builder,
-                                            is_functioncall_node_incomplete)):
-                function_name = node.callee
-                active_parameter = len(node.args)
-            elif (node := get_incomplete_node(parsed.tree, 
-                                              "eventstat", 
-                                              Definitions.CloseBracket,
-                                              uri,
-                                              ast_builder,
-                                              is_eventstat_node_incomplete
-                                              )) is not None:
+                                            is_eventstat_node_incomplete
+                                            )) is not None:
 
-                function_name = node.name
-                active_parameter = len(node.params)
+            function_name = node.name
+            active_parameter = len(node.params)
 
 
-        except ValueError:
-            pass
+    except ValueError:
+        pass
 
 
     if not function_name:
@@ -890,15 +898,12 @@ def signature_help(params: types.SignatureHelpParams) -> types.SignatureHelp | N
 
     parsed: ParseResult | None = None
     current_function = None
-    try:
-        func_signature_parser.cancel()
-        parsed = func_signature_parser.read(source + prefix)
-        func_signature_ast.build(parsed.tree)
-
-    except (ParseError, InterruptedError) as e:
-        if isinstance(e, InterruptedError):
-            return
-        current_function = get_editing_parameter(func_signature_parser, func_signature_ast, uri)
+    parsed = func_signature_parser.read(source + prefix)
+    # try:
+    #     # func_signature_ast.build(parsed.tree)
+    # except ValueError:
+    #     pass
+    current_function = get_editing_parameter(parsed, func_signature_ast, uri)
 
 
     if current_function is None:
@@ -1182,14 +1187,12 @@ def lint_document(uri: str):
         del session.messages[key]
 
     try:
-        analysis_parser.cancel()
         parsed = analysis_parser.read(document.source)
         tree = analysis_ast.build(parsed.tree)
         assembler.prepare(global_messages=session.messages, global_variables=session.variables)
         assembler.emit_program(tree)
-    except (ParseError, CompilerError, InterruptedError) as e:
-        if isinstance(e, InterruptedError):
-            return updated_globals
+    except (CompilerError, ValueError):
+        pass
 
     variables: dict[tuple[str, str | None], VariableData] = {}
     messages: dict[str, MessageData] = {}
@@ -1240,8 +1243,7 @@ def lint_document(uri: str):
 
 
     linting_errors = assembler.errors
-    syntax_errors = list(analysis_parser.speculative_errors.values()) + \
-        [i for i in analysis_parser.accumulated_errors if i.pos not in analysis_parser.speculative_errors]
+    syntax_errors = analysis_parser.accumulated_errors
 
     diagnostics: list[types.Diagnostic] = []
     seen: set[tuple[int, int]] = set()
