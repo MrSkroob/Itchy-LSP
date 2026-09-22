@@ -88,13 +88,18 @@ def clamp(a: int, upper_bound: int, lower_bound: int):
 # RE_START_WORD = re.compile(Definitions.Symbol.value)
 WORD_CHARS = re.compile(r'[A-Za-z0-9_]*$')
 
+# for when nothing is suggestable
+DEFAULT_KEYWORDS: dict[str, set[str]] = {
+    Definitions.Event.name: {"event"},
+    Definitions.Define.name: {"define"},
+    Definitions.Shared.name: {"shared"},
+}
+
 # this maps literal strings for autocomplete to the Definitions regex in the tokenizer
 KEYWORD_MAP: dict[str, set[str]] = {
-    Definitions.Define.name: {"define"},
+    **DEFAULT_KEYWORDS,
     Definitions.ElseIf.name: {"elseif"},
     Definitions.Return.name: {"return"},
-    Definitions.Shared.name: {"shared"},
-    Definitions.Event.name: {"event"},
     Definitions.While.name: {"while"},
     Definitions.Forever.name: {"forever"},
     Definitions.Bool.name: {"true", "false"},
@@ -105,6 +110,13 @@ KEYWORD_MAP: dict[str, set[str]] = {
     Definitions.In.name: {"in"},
     Definitions.Binop.name: {"and", "or", "not"}
 }
+
+
+DEFAULT_COMPLETION: list[types.CompletionItem] = []
+
+for keywords in DEFAULT_KEYWORDS.values():
+    for keyword in keywords:
+        DEFAULT_COMPLETION.append(types.CompletionItem(label=keyword, kind=types.CompletionItemKind.Keyword))
 
 
 ASSET_COMPLETION = [
@@ -142,7 +154,7 @@ def get_function_info_by_name(assembler_snapshot: AssemblerState, name: str) -> 
         block_data = SCRATCH_BLOCKS.get(name)
 
         if block_data is None:
-            if name[0] == "@":
+            if len(name) > 0 and name[0] == "@":
                 # is a speshul not really function thing
                 function_type = "asset"
                 function_data = ProcedureInfo(
@@ -464,7 +476,8 @@ class Autocomplete():
                             items.extend(self.get_defined_messages(prefix))
                         case _:
                             pass
-                
+
+        log("LISTING EXPECTATIONS")
         for expectation in expected:
             token_type = expectation.definition
             path = expectation.path
@@ -508,8 +521,9 @@ class Autocomplete():
 
         if len(items) == 0:
             items.extend(
-                self.get_defined_functions(prefix)
+                self.get_defined_functions(prefix) + DEFAULT_COMPLETION
             )
+            # items.extend()
 
         return self.remove_duplicates(items)
 
