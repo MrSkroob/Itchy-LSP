@@ -93,16 +93,16 @@ DEFAULT_KEYWORDS: dict[str, set[str]] = {
     Definitions.Event.name: {"event"},
     Definitions.Define.name: {"define"},
     Definitions.Shared.name: {"shared"},
+    Definitions.While.name: {"while"},
+    Definitions.Forever.name: {"forever"},
+    Definitions.Return.name: {"return"},
+    Definitions.Bool.name: {"true", "false"},
 }
 
 # this maps literal strings for autocomplete to the Definitions regex in the tokenizer
 KEYWORD_MAP: dict[str, set[str]] = {
     **DEFAULT_KEYWORDS,
     Definitions.ElseIf.name: {"elseif"},
-    Definitions.Return.name: {"return"},
-    Definitions.While.name: {"while"},
-    Definitions.Forever.name: {"forever"},
-    Definitions.Bool.name: {"true", "false"},
     Definitions.Else.name: {"else"},
     Definitions.Warp.name: {"warp"},
     Definitions.For.name: {"for"},
