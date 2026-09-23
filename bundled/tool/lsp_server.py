@@ -759,7 +759,6 @@ def get_incomplete_node(root_node: ParsedNode,
     """
     nodes = find_nodes(root_node, node_name)
     iterations = 0
-    log(str(len(nodes)))
     while len(nodes) > 0:
         iterations += 1
         node = nodes.pop()
@@ -770,8 +769,8 @@ def get_incomplete_node(root_node: ParsedNode,
         non_complete_node = incomplete_node_data(ast_builder, node, uri)
         if non_complete_node is None:
             continue
-        if ((not found_token or found_token[-1].dummy_token)
-                            and non_complete_node[1]):
+        if not found_token or found_token[0].dummy_token or non_complete_node[1]:
+            log(f"Incomplete: {not found_token} {found_token[-1].dummy_token} {non_complete_node[1]}")
             return non_complete_node[0]
     return None
 
@@ -808,16 +807,21 @@ def is_functioncall_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, u
         current_args = count_args(tree.args)
         func_data = get_function_info_by_name(assembler_snapshot, tree.callee)
 
-
         if func_data is None:
             return None
-        if current_args < len(func_data[0].argument_names):
-            last_token = extract_tokens(node)
-            if last_token and last_token[-1].kind == Definitions.FieldSeperator:
-                tree = FunctionCallStmt(
-                    tree.callee,
-                    tree.args + (NumberExpr(0),)
-                )
+
+        max_args = len(func_data[0].argument_names)
+        if func_data[1] == "function":
+            current_args += 1
+        
+        if current_args < max_args:
+            # last_token = extract_tokens(node)
+            # if last_token and last_token[-1].kind == Definitions.FieldSeperator:
+            log(f"{func_data[0].name}: {current_args} {len(func_data[0].argument_names)}")
+            tree = FunctionCallStmt(
+                tree.callee,
+                tree.args + (NumberExpr(0, dummy=True),)
+            )
             return tree, True
         return tree, False
     except ValueError:
@@ -849,7 +853,7 @@ def is_eventstat_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, uri:
             if last_token and last_token[-1].kind == Definitions.FieldSeperator:
                 tree = EventHandlerStmt(
                     tree.name,
-                    tree.params + (NumberExpr(0),),
+                    tree.params + (NumberExpr(0, dummy=True),),
                     body=()
                 )
             return tree, True
