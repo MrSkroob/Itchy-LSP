@@ -123,6 +123,7 @@ ASSET_COMPLETION = [
     types.CompletionItem(label="@" + i.value, kind=types.CompletionItemKind.Value)
     for i in AssetTypes
 ]
+DEFAULT_COMPLETION.extend(ASSET_COMPLETION)
 
 
 BOOLEAN_COMPLETION = [
@@ -480,7 +481,6 @@ class Autocomplete():
         for expectation in expected:
             token_type = expectation.definition
             path = expectation.path
-
 
             if token_type.name in KEYWORD_MAP:
                 for keyword in KEYWORD_MAP[token_type.name]:
