@@ -23,18 +23,18 @@ from pygls.lsp.server import LanguageServer
 from lsprotocol import types
 from itchy.shared_templates import DATA_TO_VARIABLE_TYPE, ASTNode, AssetTypes, SourcePosition, SourceSpan
 from itchy.scratch_blocks import SCRATCH_BLOCKS, STAGE_BLOCKS, Block, Event, Reporter, Field, ReturnType, Menu
-from itchy.itch_ast import ASTBuilder, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr, Expr
+from itchy.itch_ast import ASTBuilder, NumberExpr, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr, Expr
 from itchy.parserv2 import Parser, ExpectedToken, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
 from itchy.assembler import Assembler, VariableTypes, ProcedureInfo, VariableData, MessageData, CompilerErrorCodes, SymbolOccurence, SymbolType
-from itchy.dummy_nodes import ANALYSIS_STRATEGIES, find_nodes, find_last_node, find_tokens, make_wrap
+from itchy.dummy_nodes import ANALYSIS_STRATEGIES, extract_tokens, find_nodes, find_last_node, find_tokens, make_wrap
 from itchy.errors import get_message, CompilerError, CompilerWarning
 
 
 # parser that tries not to fail so ast can give syntax highlighting to entire file
 semantic_parser = Parser(allow_recovery=True, allow_insertions=True, recovery_nodes=ANALYSIS_STRATEGIES)
-completions_parser = Parser(allow_recovery=False)
-func_signature_parser = Parser()
+completions_parser = Parser(allow_insertions=True, recovery_nodes=ANALYSIS_STRATEGIES)
+func_signature_parser = Parser(allow_insertions=True, recovery_nodes=ANALYSIS_STRATEGIES)
 
 analysis_parser = Parser(allow_recovery=True, allow_insertions=True, recovery_nodes=ANALYSIS_STRATEGIES)
 analysis_ast = ASTBuilder(is_strict=False)
@@ -477,7 +477,6 @@ class Autocomplete():
                         case _:
                             pass
 
-        log("LISTING EXPECTATIONS")
         for expectation in expected:
             token_type = expectation.definition
             path = expectation.path
@@ -752,10 +751,11 @@ def get_incomplete_node(root_node: ParsedNode,
                         ast_builder: ASTBuilder,
                         incomplete_node_data: Callable[[ASTBuilder, ParsedNode, str], tuple[T, bool] | None]) -> T | None:
     """
-    Returns the last incomplete node (if any)
+    Returns the deepest incomplete node (if any)
     """
     nodes = find_nodes(root_node, node_name)
     iterations = 0
+    log(str(len(nodes)))
     while len(nodes) > 0:
         iterations += 1
         node = nodes.pop()
@@ -766,8 +766,8 @@ def get_incomplete_node(root_node: ParsedNode,
         non_complete_node = incomplete_node_data(ast_builder, node, uri)
         if non_complete_node is None:
             continue
-        if (not found_token or found_token[-1].dummy_token
-                            or non_complete_node[1]):
+        if ((not found_token or found_token[-1].dummy_token)
+                            and non_complete_node[1]):
             return non_complete_node[0]
     return None
 
@@ -808,12 +808,12 @@ def is_functioncall_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, u
         if func_data is None:
             return None
         if current_args < len(func_data[0].argument_names):
-            # last_token = extract_tokens(node)
-            # if last_token and last_token[-1].kind == Definitions.FieldSeperator:
-            #     tree = FunctionCallStmt(
-            #         tree.callee,
-            #         tree.args + (NumberExpr(0),)
-            #     )
+            last_token = extract_tokens(node)
+            if last_token and last_token[-1].kind == Definitions.FieldSeperator:
+                tree = FunctionCallStmt(
+                    tree.callee,
+                    tree.args + (NumberExpr(0),)
+                )
             return tree, True
         return tree, False
     except ValueError:
@@ -841,6 +841,13 @@ def is_eventstat_node_incomplete(ast_builder: ASTBuilder, node: ParsedNode, uri:
         if event_data is None:
             return None
         if current_args < len(event_data[0].argument_names):
+            last_token = extract_tokens(node)
+            if last_token and last_token[-1].kind == Definitions.FieldSeperator:
+                tree = EventHandlerStmt(
+                    tree.name,
+                    tree.params + (NumberExpr(0),),
+                    body=()
+                )
             return tree, True
         return tree, False
     except ValueError:
@@ -881,7 +888,6 @@ def get_editing_parameter(result: ParseResult, ast_builder: ASTBuilder, uri: str
 
             function_name = node.name
             active_parameter = len(node.params)
-
 
     except ValueError:
         pass
