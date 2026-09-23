@@ -16,7 +16,7 @@ import logging
 import re
 # from enum import Enum
 from dataclasses import dataclass, field, replace
-from typing import Iterable, Sequence, Callable, TypeVar, Protocol, cast
+from typing import Iterable, Sequence, Callable, TypeVar, Protocol
 # from pygls.workspace.text_document import TextDocument, RE_START_WORD, RE_END_WORD
 from pygls.uris import to_fs_path
 from pygls.lsp.server import LanguageServer
@@ -302,7 +302,7 @@ class Autocomplete():
             if ":" in var_data.name:
                 continue
 
-            if var_data.context.function_context != scope:
+            if var_data.context.function_context != scope and var_data.context.function_context:
                 continue
 
             if is_list is not None and var_data.is_list != is_list:
@@ -522,6 +522,10 @@ class Autocomplete():
             items.extend(
                 self.get_defined_functions(prefix) + DEFAULT_COMPLETION
             )
+
+            items.extend(
+                self.get_defined_variables(prefix, scope)
+            )
             # items.extend()
 
         return self.remove_duplicates(items)
@@ -555,11 +559,11 @@ def completions(params: types.CompletionParams) -> list[types.CompletionItem]:
 
     if parsed.failed:
         expected = parsed.expected.items
-        if function_def_node := find_last_node(cast(ParsedNode, parsed.partial_tree), "functionstat"):
-            scope = completion_ast.build_functionstat(function_def_node).name
+        # if function_def_node := find_last_node(cast(ParsedNode, parsed.partial_tree), "functionstat"):
+        #     scope = completion_ast.build_functionstat(function_def_node).name
     else:
         expected = completions_parser.expected.items
-    # scope = completion_ast.function_scope
+    scope = completion_ast.function_scope
 
 
     return autocomplete.completion_items_for_expected(expected, prefix.strip(), current_function, scope)
