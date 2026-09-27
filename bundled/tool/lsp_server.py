@@ -482,6 +482,8 @@ class Autocomplete():
             token_type = expectation.definition
             path = expectation.path
 
+            log(str(path))
+
             if token_type.name in KEYWORD_MAP:
                 for keyword in KEYWORD_MAP[token_type.name]:
                     if keyword.startswith(prefix):
@@ -514,9 +516,13 @@ class Autocomplete():
                     items.extend(
                         self.get_defined_variables(prefix, scope)
                     )
+                # log("SYMBOOOLLL")
+            else:
+                if "args" in path or "functionstat" in path or "vardefstat" in path: 
+                    items.extend(TYPE_COMPLETION)
 
-            if token_type == Definitions.Type:
-                items.extend(TYPE_COMPLETION)
+            # if token_type == Definitions.Type:
+            #     items.extend(TYPE_COMPLETION)
 
         if len(items) == 0:
             items.extend(
