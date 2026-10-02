@@ -248,6 +248,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const serverId = serverInfo.module;
 
     // Setup logging
+    let pythonPath: string[] | undefined;
     const outputChannel = createOutputChannel(serverName);
 
     context.subscriptions.push(outputChannel, registerLogger(outputChannel));
@@ -296,7 +297,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             if (interpreter && interpreter.length > 0) {
                 if (checkVersion(await resolveInterpreter(interpreter))) {
                     traceVerbose(`Using interpreter from ${serverInfo.module}.interpreter: ${interpreter.join(' ')}`);
-
+                    pythonPath = interpreter;
                     await restartAndSyncServer();
                 }
 
@@ -307,7 +308,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
             if (interpreterDetails.path) {
                 traceVerbose(`Using interpreter from Python extension: ${interpreterDetails.path.join(' ')}`);
-
+                pythonPath = interpreterDetails.path;
                 await restartAndSyncServer();
                 return;
             }
@@ -399,9 +400,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
         registerCommand(`${serverId}.compile`, commands.compile),
 
-        registerCommand(`${serverId}.compileFile`, () => commands.compileFile(context)),
+        registerCommand(`${serverId}.compileFile`, () => commands.compileFile(pythonPath, context)),
 
-        registerCommand(`${serverId}.compileProject`, () => commands.compileProject(context)),
+        registerCommand(`${serverId}.compileProject`, () => commands.compileProject(pythonPath, context)),
     );
 
     setImmediate(async () => {

@@ -152,9 +152,9 @@ export function resolveVariables(value: string, uri: vscode.Uri): string {
         .replace(/\$\{fileExtname\}/g, uri ? path.extname(uri.fsPath) : '');
 }
 
-async function runCompileCommand(context: vscode.ExtensionContext, path: string) {
-    const interpreter = await getInterpreterDetails();
-    const pythonPath = interpreter.path;
+async function runCompileCommand(pythonPath: string[] | undefined, context: vscode.ExtensionContext, path: string) {
+    // const interpreter = await getInterpreterDetails();
+    // const pythonPath = interpreter.path;
     const outputPath = vscode.workspace.getConfiguration('Itchy LSP').get('output', '');
 
     if (!pythonPath) {
@@ -234,7 +234,7 @@ export async function compile() {
     }
 }
 
-export async function compileFile(context: vscode.ExtensionContext) {
+export async function compileFile(pythonPath: string[] | undefined, context: vscode.ExtensionContext) {
     const editor = vscode.window.activeTextEditor;
 
     if (!editor || editor.document.languageId !== 'itchy') {
@@ -245,10 +245,10 @@ export async function compileFile(context: vscode.ExtensionContext) {
 
     const file = editor.document.uri.fsPath;
 
-    runCompileCommand(context, file);
+    runCompileCommand(pythonPath, context, file);
 }
 
-export async function compileProject(context: vscode.ExtensionContext) {
+export async function compileProject(pythonPath: string[] | undefined, context: vscode.ExtensionContext) {
     const editor = vscode.window.activeTextEditor;
     const uri = editor?.document.uri;
 
@@ -261,5 +261,5 @@ export async function compileProject(context: vscode.ExtensionContext) {
     // await vscode.window.showInformationMessage(filepath);
     const cwd = resolveVariables(vscode.workspace.getConfiguration('Itchy LSP').get('cwd', '${workspaceFolder}'), uri);
     // await vscode.window.showInformationMessage(cwd);
-    runCompileCommand(context, cwd);
+    runCompileCommand(pythonPath, context, cwd);
 }
