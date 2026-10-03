@@ -1034,9 +1034,8 @@ def hover(params: types.HoverParams) -> types.Hover | None:
             if proc_type == "function":
                 offset = 1
 
-            signature = f"({proc_type}) {proc_data.name}({", ".join(f"{proc_data.argument_names[i]}: {proc_data.argument_types[i].value}" 
-                                                                for i in 
-                                                                range(len(proc_data.argument_names) - offset))}) -> {return_type}"
+            signature = f"({proc_type}) {proc_data.name}({", ".join(f"{proc_data.argument_names[i]}: {proc_data.argument_types[i].value}" \
+                                                                for i in range(len(proc_data.argument_names) - offset))}) -> {return_type}"
             contents = types.MarkupContent(
                 kind=types.MarkupKind.Markdown,
                 value=f"```itchy\n{signature}\n```"
