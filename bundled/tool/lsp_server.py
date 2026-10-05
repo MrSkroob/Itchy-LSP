@@ -435,9 +435,9 @@ class Autocomplete():
                                 items.extend(self.get_defined_variables(prefix, scope, True))
                             case "VARIABLE":
                                 items.extend(self.get_defined_variables(prefix, scope, False))
-                            case "OBJECT": 
-                                items.extend(self.get_defined_sprites(prefix))
-                                expected_type = VariableTypes.STRING
+                            # case "OBJECT": 
+                            #     items.extend(self.get_defined_sprites(prefix))
+                            #     expected_type = VariableTypes.STRING
                             case "PROPERTY":
                                 items.extend(self.get_all_private_variables(prefix))
                             case _:
@@ -1677,7 +1677,7 @@ def update_file_cache(params: TargetFilesParams):
 
     target_path = Path(target_fs_path)
     document_path = target_path / f"{target_path.name}.itch"
-    file_cache[str(document_path).casefold()] = TargetFiles(
+    file_cache[uri_to_fs(document_path.as_uri())] = TargetFiles(
         sprite_name=target_path.name,
         costumes=params.costumes,
         sounds=params.sounds
