@@ -178,6 +178,10 @@
             {
                 "command": "Itchy LSP.compile",
                 "title": "Compile"
+            },
+            {
+                "command": "Itchy LSP.hasPreviewer",
+                "title": "Has Previewer"
             }
         ],
         "menus": {

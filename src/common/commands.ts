@@ -1,8 +1,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { getInterpreterDetails } from './python';
+// import { getInterpreterDetails } from './python';
 import { spawn } from 'child_process';
-import { write } from 'fs';
+import { getItchyVirtualMachine } from './itch-previewer';
+// import { write } from 'fs';
 
 const sampleSource = `event event_whenflagclicked() {
     looks_say("Hello Itchy!");
@@ -14,6 +15,12 @@ const stageSource = `event event_whenflagclicked() {}`
 function testFilename(value: string) {
     return /[<>:"/\\|?*]/.test(value);
 }
+
+
+type TargetOutput = 
+    | "Scratch"
+    | "Local";
+
 
 async function createTarget(projectUri: vscode.Uri, targetName: string) {
     const targetUri = vscode.Uri.joinPath(projectUri, targetName);
@@ -164,19 +171,30 @@ async function runCompileCommand(pythonPath: string[] | undefined, context: vsco
         return;
     }
 
+    const previewerExtensionPath = getItchyVirtualMachine();
+
     const compilerPath = vscode.Uri.joinPath(context.extensionUri, 'bundled', 'libs').fsPath;
 
     const writeEmitter = new vscode.EventEmitter<string>();
     const closeEmitter = new vscode.EventEmitter<number>();
+
+    const compileArguments = ['-m', 'itchy', "--allow-warnings", path.trim(), outputPath.trim()];
+
+    if (previewerExtensionPath) {
+        const jsLibrary = vscode.Uri.joinPath(previewerExtensionPath, "dist", "stage", "vm", "scratchBlocks");
+        compileArguments.push(jsLibrary.fsPath.trim());
+    }
+
+    const stringArguments = compileArguments.join(" ");
 
     const pty: vscode.Pseudoterminal = {
         onDidWrite: writeEmitter.event,
         onDidClose: closeEmitter.event,
 
         open: () => {
-            const child = spawn(pythonPath[0], ['-m', 'itchy', "--allow-warnings", path, outputPath], { cwd: compilerPath });
+            const child = spawn(pythonPath[0], compileArguments, { cwd: compilerPath });
             child.on('spawn', () => {
-                writeEmitter.fire(`${pythonPath[0]} -m itchy "--allow-warnings" "${path}" "${outputPath}"\r\n`)
+                writeEmitter.fire(`${pythonPath[0]} ${stringArguments}\r\n`);
             })
 
             child.stdout.on('data', (data) => {
@@ -263,3 +281,7 @@ export async function compileProject(pythonPath: string[] | undefined, context: 
     // await vscode.window.showInformationMessage(cwd);
     runCompileCommand(pythonPath, context, cwd);
 }
+
+// export function hasPreviewer() {
+    
+// }
