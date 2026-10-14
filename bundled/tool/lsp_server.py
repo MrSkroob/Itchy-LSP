@@ -12,6 +12,7 @@ if str(BUNDLED_LIBS) not in sys.path:
 
 
 import asyncio
+import json
 import logging
 import re
 # from enum import Enum
@@ -26,7 +27,7 @@ from itchy.scratch_blocks import SCRATCH_BLOCKS, STAGE_BLOCKS, Block, Event, Rep
 from itchy.itch_ast import ASTBuilder, NumberExpr, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr, Expr
 from itchy.parserv2 import Parser, ExpectedToken, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
-from itchy.assembler import Assembler, VariableTypes, ProcedureInfo, VariableData, MessageData, CompilerErrorCodes, SymbolOccurence, SymbolType
+from itchy.compilers.assembler import Assembler, VariableTypes, ProcedureInfo, VariableData, MessageData, CompilerErrorCodes, SymbolOccurence, SymbolType
 from itchy.dummy_nodes import ANALYSIS_STRATEGIES, extract_tokens, find_nodes, find_last_node, find_tokens, make_wrap
 from itchy.errors import get_message, CompilerError, CompilerWarning
 
@@ -1192,6 +1193,39 @@ def code_action(params: types.CodeActionParams) -> list[types.CodeAction]:
                 pass
 
     return actions
+
+
+async def update_previewer_json():
+    if not server.workspace.root_path:
+        return
+    
+    project_path = Path(server.workspace.root_path)
+
+    try:
+        with open(project_path / "project-previewer.json", "w") as f:
+            data = json.load(f)
+            if "variables" not in data:
+                data["variables"] = {}
+
+            for _, assembler_state in assembler_snapshots.items():
+                for variable in assembler_state.variables.values():
+                    owner = "stage" if variable.shared else Path(variable.uri).stem
+
+                    data["variables"] = {
+                        "name": variable.name,
+                        # Note that Path() (and there is no option to until Python 3.13, which we aren't targeting) doesn't actually treat URIs as, well, URIs. 
+                        # the only reason .stem works is because URIs are just close enough to filesystem paths that 
+                        # it can work out where the extension is and where to stop. 
+                        "owner": owner,
+                        "type": "list" if variable.is_list else "variable",
+                        "x": 0,
+                        "y": 0
+                    }
+
+            json.dump(data, f)
+
+    except FileNotFoundError:
+        return
 
 
 def lint_document(uri: str):
