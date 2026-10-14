@@ -28,7 +28,7 @@ and save wherever you want to. <br />
 (mostly copied from https://github.com/microsoft/vscode-python-tools-extension-template)
 ## Requirements:
 1. VS Code 1.64.0 or greater
-2. Python 3.10 or greater
+2. Python 3.11 or greater
 3. node >= 18.17.0
 4. npm >= 8.19.0 (npm is installed with node, check npm version, use `npm install -g npm@8.3.0` to update)
 5. Python extension for VS Code
