@@ -1226,7 +1226,7 @@ def update_previewer_json():
             data.append(
                 {
                     "name": variable.name,
-                    "owner": "stage" if variable.shared else Path(variable.uri).stem,
+                    "owner": "stage" if variable.shared else Path(variable.uri).stem.lower(),
                     "type": "list" if variable.is_list else "variable"
                 }
             )
