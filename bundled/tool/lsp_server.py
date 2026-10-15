@@ -1212,11 +1212,15 @@ def update_previewer_json():
     seen: set[str] = set()
     data: list[dict[str, Any]] = []
 
+    # for variable_name, variable in session.variables.items():
+    #     seen.add(variable_name)
+    #     data.append()
+
     for _, assembler_state in assembler_snapshots.items():
         for variable in assembler_state.variables.values():
+            if variable.name in seen:
+                continue
             if variable.shared:
-                if variable.name in seen:
-                    continue
                 seen.add(variable.name)
 
             data.append(

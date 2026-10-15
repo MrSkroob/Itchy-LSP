@@ -283,6 +283,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const restartAndSyncServer = async () => {
         lsClient = await restartServer(serverId, serverName, outputChannel, lsClient);
 
+        if (lsClient) {
+            context.subscriptions.push(lsClient.onNotification("itchy/variablesChanged", (data: VariableData[]) => {
+                vscode.window.showInformationMessage("Sending message");
+                vscode.commands.executeCommand(
+                    "itchy-previewer.updateVariables",
+                    data
+                );
+            }))
+        }
+        
+
         await sendInitialTargetFiles(lsClient);
     };
 
@@ -413,14 +424,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         registerCommand(`${serverId}.compileFile`, () => commands.compileFile(pythonPath, context)),
 
         registerCommand(`${serverId}.compileProject`, () => commands.compileProject(pythonPath, context)),
-
-        lsClient!.onNotification("itchy/variablesChanged", (data: VariableData[]) => {
-            vscode.window.showInformationMessage("Sending message");
-            vscode.commands.executeCommand(
-                "itchy-previewer.updateVariables",
-                data
-            );
-        })
     );
 
 
