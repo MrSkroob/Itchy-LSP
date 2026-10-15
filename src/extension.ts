@@ -21,6 +21,14 @@ import { LS_SERVER_RESTART_DELAY } from './common/constants';
 import { getLSClientTraceLevel, getTargetFiles } from './common/utilities';
 import { createOutputChannel, onDidChangeConfiguration, registerCommand } from './common/vscodeapi';
 
+
+interface VariableData {
+	name: string,
+	owner: string,
+	type: "list" | "variable"
+}
+
+
 interface AssetRename {
     resourceType: 'costume' | 'sound';
     oldName: string;
@@ -377,6 +385,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 }
             }
         }),
+
+        
     );
 
     context.subscriptions.push(
@@ -403,7 +413,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         registerCommand(`${serverId}.compileFile`, () => commands.compileFile(pythonPath, context)),
 
         registerCommand(`${serverId}.compileProject`, () => commands.compileProject(pythonPath, context)),
+
+        lsClient!.onNotification("itchy/variablesChanged", (data: VariableData[]) => {
+            vscode.window.showInformationMessage("Sending message");
+            vscode.commands.executeCommand(
+                "itchy-previewer.updateVariables",
+                data
+            );
+        })
     );
+
 
     setImmediate(async () => {
         const interpreter = getInterpreterFromSetting(serverId);

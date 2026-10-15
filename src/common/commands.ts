@@ -17,11 +17,6 @@ function testFilename(value: string) {
 }
 
 
-type TargetOutput = 
-    | "Scratch"
-    | "Local";
-
-
 async function createTarget(projectUri: vscode.Uri, targetName: string) {
     const targetUri = vscode.Uri.joinPath(projectUri, targetName);
 

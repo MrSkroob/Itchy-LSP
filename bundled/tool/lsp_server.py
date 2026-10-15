@@ -17,7 +17,7 @@ import logging
 import re
 # from enum import Enum
 from dataclasses import dataclass, field, replace
-from typing import Iterable, Sequence, Callable, TypeVar, Protocol
+from typing import Any, Iterable, Sequence, Callable, TypeVar, Protocol
 # from pygls.workspace.text_document import TextDocument, RE_START_WORD, RE_END_WORD
 from pygls.uris import to_fs_path
 from pygls.lsp.server import LanguageServer
@@ -540,6 +540,15 @@ class Autocomplete():
 
 def log(message: str):
     logging.info(message)
+
+
+@server.feature(types.TEXT_DOCUMENT_DID_SAVE)
+def on_save(_: types.DidSaveTextDocumentParams):
+    variables = update_previewer_json()
+    server.protocol.notify(
+        "itchy/variablesChanged",
+        variables
+    )
 
     
 @server.feature(types.TEXT_DOCUMENT_COMPLETION, types.CompletionOptions(
@@ -1195,37 +1204,36 @@ def code_action(params: types.CodeActionParams) -> list[types.CodeAction]:
     return actions
 
 
-async def update_previewer_json():
+def update_previewer_json():
     if not server.workspace.root_path:
         return
     
     project_path = Path(server.workspace.root_path)
+    seen: set[str] = set()
+    data: list[dict[str, Any]] = []
 
+    for _, assembler_state in assembler_snapshots.items():
+        for variable in assembler_state.variables.values():
+            if variable.shared:
+                if variable.name in seen:
+                    continue
+                seen.add(variable.name)
+
+            data.append(
+                {
+                    "name": variable.name,
+                    "owner": "stage" if variable.shared else Path(variable.uri).stem,
+                    "type": "list" if variable.is_list else "variable"
+                }
+            )
     try:
-        with open(project_path / "project-previewer.json", "w") as f:
-            data = json.load(f)
-            if "variables" not in data:
-                data["variables"] = {}
-
-            for _, assembler_state in assembler_snapshots.items():
-                for variable in assembler_state.variables.values():
-                    owner = "stage" if variable.shared else Path(variable.uri).stem
-
-                    data["variables"] = {
-                        "name": variable.name,
-                        # Note that Path() (and there is no option to until Python 3.13, which we aren't targeting) doesn't actually treat URIs as, well, URIs. 
-                        # the only reason .stem works is because URIs are just close enough to filesystem paths that 
-                        # it can work out where the extension is and where to stop. 
-                        "owner": owner,
-                        "type": "list" if variable.is_list else "variable",
-                        "x": 0,
-                        "y": 0
-                    }
-
+        with open(project_path / "project-variables.json", "w") as f:
             json.dump(data, f)
 
     except FileNotFoundError:
-        return
+        pass
+
+    return data
 
 
 def lint_document(uri: str):
