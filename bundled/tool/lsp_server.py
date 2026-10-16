@@ -1209,7 +1209,7 @@ def update_previewer_json():
         return
     
     project_path = Path(server.workspace.root_path)
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     data: list[dict[str, Any]] = []
 
     # for variable_name, variable in session.variables.items():
@@ -1218,15 +1218,22 @@ def update_previewer_json():
 
     for _, assembler_state in assembler_snapshots.items():
         for variable in assembler_state.variables.values():
-            if variable.name in seen:
+            owner = Path(variable.uri).stem.lower()
+            if (variable.name, owner) in seen:
                 continue
+            elif ((variable.name, "stage") in seen and variable.shared):
+                continue
+            
             if variable.shared:
-                seen.add(variable.name)
+                seen.add((variable.name, "stage"))
+            else:
+                seen.add((variable.name, owner))
 
             data.append(
                 {
                     "name": variable.name,
-                    "owner": "stage" if variable.shared else Path(variable.uri).stem.lower(),
+                    "owner": "stage" if variable.shared else owner,
+                    "hidden": True,
                     "type": "list" if variable.is_list else "variable"
                 }
             )
