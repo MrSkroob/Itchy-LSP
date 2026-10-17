@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 // import { getInterpreterDetails } from './python';
 import { spawn } from 'child_process';
-import { getItchyVirtualMachine } from './itch-previewer';
+// import { getItchyVirtualMachine } from './itch-previewer';
 // import { write } from 'fs';
 
 const sampleSource = `event event_whenflagclicked() {
@@ -166,7 +166,7 @@ async function runCompileCommand(pythonPath: string[] | undefined, context: vsco
         return;
     }
 
-    const previewerExtensionPath = getItchyVirtualMachine();
+    // const previewerExtensionPath = getItchyVirtualMachine();
 
     const compilerPath = vscode.Uri.joinPath(context.extensionUri, 'bundled', 'libs').fsPath;
 
@@ -175,10 +175,10 @@ async function runCompileCommand(pythonPath: string[] | undefined, context: vsco
 
     const compileArguments = ['-m', 'itchy', "--allow-warnings", path.trim(), outputPath.trim()];
 
-    if (previewerExtensionPath) {
-        const jsLibrary = vscode.Uri.joinPath(previewerExtensionPath, "dist", "stage", "vm", "scratchBlocks");
-        compileArguments.push(jsLibrary.fsPath.trim());
-    }
+    // if (previewerExtensionPath) {
+    //     const jsLibrary = vscode.Uri.joinPath(previewerExtensionPath, "dist", "stage", "vm", "scratchBlocks");
+    //     compileArguments.push(jsLibrary.fsPath.trim());
+    // }
 
     const stringArguments = compileArguments.join(" ");
 
