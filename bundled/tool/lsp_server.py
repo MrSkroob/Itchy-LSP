@@ -1219,20 +1219,19 @@ def update_previewer_json():
     for _, assembler_state in assembler_snapshots.items():
         for variable in assembler_state.variables.values():
             owner = Path(variable.uri).stem.lower()
+            if variable.shared:
+                owner = "stage"
             if (variable.name, owner) in seen:
                 continue
-            elif ((variable.name, "stage") in seen and variable.shared):
+            if ":" in variable.name:
                 continue
             
-            if variable.shared:
-                seen.add((variable.name, "stage"))
-            else:
-                seen.add((variable.name, owner))
+            seen.add((variable.name, owner))
 
             data.append(
                 {
                     "name": variable.name,
-                    "owner": "stage" if variable.shared else owner,
+                    "owner": owner,
                     "hidden": True,
                     "type": "list" if variable.is_list else "variable"
                 }
