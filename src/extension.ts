@@ -285,7 +285,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
         if (lsClient) {
             context.subscriptions.push(lsClient.onNotification("itchy/variablesChanged", (data: VariableData[]) => {
-                vscode.window.showInformationMessage("Sending message");
                 vscode.commands.executeCommand(
                     "itchy-previewer.updateVariables",
                     data
