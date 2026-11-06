@@ -3,5 +3,5 @@ name = "itchy-lsp"
 version = "0.7.7"
 requires-python = ">=3.10"
 dependencies = [
-    "itchy>=0.7.0",
+    "itchy @ file:///${PROJECT_ROOT}/bundled/libs >=0.7.0",
 ]

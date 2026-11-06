@@ -27,10 +27,13 @@ from itchy.scratch_blocks import SCRATCH_BLOCKS, STAGE_BLOCKS, Block, Event, Rep
 from itchy.itch_ast import ASTBuilder, NumberExpr, SemanticToken, FunctionCallStmt, EventHandlerStmt, AssetExpr, Expr
 from itchy.parserv2 import Parser, ExpectedToken, ParseResult, ParsedNode
 from itchy.tokenizer import Definitions
+from itchy.compilers.type_analyser import TypeInferer
 from itchy.compilers.assembler import Assembler, VariableTypes, ProcedureInfo, VariableData, MessageData, CompilerErrorCodes, SymbolOccurence, SymbolType
 from itchy.dummy_nodes import ANALYSIS_STRATEGIES, extract_tokens, find_nodes, find_last_node, find_tokens, make_wrap
 from itchy.errors import get_message, CompilerError, CompilerWarning
 
+
+type_inferer = TypeInferer()
 
 # parser that tries not to fail so ast can give syntax highlighting to entire file
 semantic_parser = Parser(allow_recovery=True, allow_insertions=True, recovery_nodes=ANALYSIS_STRATEGIES)
@@ -517,6 +520,8 @@ class Autocomplete():
                     items.extend(
                         self.get_defined_variables(prefix, scope)
                     )
+                if "argtype" in path:
+                    items.extend(TYPE_COMPLETION)
                 # log("SYMBOOOLLL")
             else:
                 if "args" in path or "functionstat" in path or "vardefstat" or "typelist" in path: 
@@ -533,7 +538,8 @@ class Autocomplete():
             items.extend(
                 self.get_defined_variables(prefix, scope)
             )
-            # items.extend()
+
+            items.extend(TYPE_COMPLETION)
 
         return self.remove_duplicates(items)
 
@@ -1275,6 +1281,7 @@ def lint_document(uri: str):
     try:
         parsed = analysis_parser.read(document.source)
         tree = analysis_ast.build(parsed.tree)
+        type_inferer.handle_program(tree)
         assembler.prepare(global_messages=session.messages, global_variables=session.variables)
         assembler.emit_program(tree)
     except (CompilerError, ValueError):
